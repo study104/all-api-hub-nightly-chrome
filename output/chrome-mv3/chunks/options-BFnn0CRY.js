@@ -1,0 +1,1 @@
+import{O as e,k as t}from"./zap-BMANRUPG.js";import"./tailwind-D8TwAFDR.js";import{t as n}from"./App-CvCkQtAj.js";var r=t(),i=e();(0,r.createRoot)(document.getElementById(`root`)).render((0,i.jsx)(n,{surface:`page`}));
