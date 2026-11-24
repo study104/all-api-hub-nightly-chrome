@@ -1,0 +1,21 @@
+node_modules/
+package-lock.json
+# 构建产物由 esbuild 生成，不手动排版。
+output/
+# 临时用于保留旧解压目录 ID 的根目录构建产物。
+/assets/
+/background/
+/chunks/
+/content-scripts/
+/icon/
+/opencv/
+/manifest.json
+/options.html
+/sidepanel.html
+/preview.html
+/shell-preview.html
+.legacy-root-build.json
+# 第三方发布资源，保留当前 React、Motion 与 OpenCV 代码。
+src/vendor/
+public/opencv/opencv.js
+output/chrome-mv3/opencv/opencv.js

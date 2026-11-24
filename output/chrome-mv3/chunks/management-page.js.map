@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../../src/entries/management-page.js"],
+  "sourcesContent": ["import { O as getJsxRuntime, k as getReactDOM } from '../vendor/react-dom-and-shared-icons.js';\nimport '../shared/ui-components.js';\nimport { t as CheckinManagerApp } from './management-app.js';\n\nconst reactDOM = getReactDOM();\nconst jsxRuntime = getJsxRuntime();\nreactDOM\n  .createRoot(document.getElementById('root'))\n  .render(jsxRuntime.jsx(CheckinManagerApp, { surface: 'page' }));\n"],
+  "mappings": ";;;;;;;;;;;AAIA,IAAM,WAAW,EAAY;AAC7B,IAAM,aAAa,EAAc;AACjC,SACG,WAAW,SAAS,eAAe,MAAM,CAAC,EAC1C,OAAO,WAAW,IAAI,eAAmB,EAAE,SAAS,OAAO,CAAC,CAAC;",
+  "names": []
+}

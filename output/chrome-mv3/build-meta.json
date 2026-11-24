@@ -1,0 +1,1244 @@
+{
+  "inputs": {
+    "src/shared/background-platform.js": {
+      "bytes": 40007,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../modules/accounts/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../modules/checkin/service.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/slider/service.js": {
+      "bytes": 72742,
+      "imports": [
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/records/service.js": {
+      "bytes": 31384,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../accounts/service.js"
+        },
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../sites/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../proxies/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/proxies/service.js": {
+      "bytes": 69901,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../accounts/service.js"
+        },
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../sites/service.js"
+        },
+        {
+          "path": "src/modules/learning/service.js",
+          "kind": "import-statement",
+          "original": "../learning/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/modules/records/service.js",
+          "kind": "import-statement",
+          "original": "../records/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/learning/service.js": {
+      "bytes": 90980,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../accounts/service.js"
+        },
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../sites/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/modules/slider/service.js",
+          "kind": "import-statement",
+          "original": "../slider/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../proxies/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/settings/service.js": {
+      "bytes": 4273,
+      "imports": [
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/checkin/service.js": {
+      "bytes": 127861,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../accounts/service.js"
+        },
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../sites/service.js"
+        },
+        {
+          "path": "src/modules/learning/service.js",
+          "kind": "import-statement",
+          "original": "../learning/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../proxies/service.js"
+        },
+        {
+          "path": "src/modules/records/service.js",
+          "kind": "import-statement",
+          "original": "../records/service.js"
+        },
+        {
+          "path": "src/modules/slider/service.js",
+          "kind": "import-statement",
+          "original": "../slider/service.js"
+        },
+        {
+          "path": "src/modules/settings/service.js",
+          "kind": "import-statement",
+          "original": "../settings/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/sites/service.js": {
+      "bytes": 89963,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../accounts/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../proxies/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/accounts/service.js": {
+      "bytes": 40685,
+      "imports": [
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../sites/service.js"
+        },
+        {
+          "path": "src/modules/learning/service.js",
+          "kind": "import-statement",
+          "original": "../learning/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../checkin/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../proxies/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../../shared/background-platform.js"
+        },
+        {
+          "path": "src/entries/background.js",
+          "kind": "import-statement",
+          "original": "../../entries/background.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/background.js": {
+      "bytes": 26537,
+      "imports": [
+        {
+          "path": "src/modules/accounts/service.js",
+          "kind": "import-statement",
+          "original": "../modules/accounts/service.js"
+        },
+        {
+          "path": "src/modules/sites/service.js",
+          "kind": "import-statement",
+          "original": "../modules/sites/service.js"
+        },
+        {
+          "path": "src/modules/learning/service.js",
+          "kind": "import-statement",
+          "original": "../modules/learning/service.js"
+        },
+        {
+          "path": "src/modules/checkin/service.js",
+          "kind": "import-statement",
+          "original": "../modules/checkin/service.js"
+        },
+        {
+          "path": "src/modules/slider/service.js",
+          "kind": "import-statement",
+          "original": "../modules/slider/service.js"
+        },
+        {
+          "path": "src/modules/proxies/service.js",
+          "kind": "import-statement",
+          "original": "../modules/proxies/service.js"
+        },
+        {
+          "path": "src/modules/records/service.js",
+          "kind": "import-statement",
+          "original": "../modules/records/service.js"
+        },
+        {
+          "path": "src/modules/settings/service.js",
+          "kind": "import-statement",
+          "original": "../modules/settings/service.js"
+        },
+        {
+          "path": "src/shared/background-platform.js",
+          "kind": "import-statement",
+          "original": "../shared/background-platform.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/shared/content-runtime.js": {
+      "bytes": 955,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/shared/content-support.js": {
+      "bytes": 60695,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "./content-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/learning/content.js": {
+      "bytes": 64777,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "../../shared/content-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/checkin/content.js": {
+      "bytes": 427141,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "../../shared/content-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/slider/content.js": {
+      "bytes": 186061,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "../../shared/content-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/auto-login.js": {
+      "bytes": 1423,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "../shared/content-runtime.js"
+        },
+        {
+          "path": "src/shared/content-support.js",
+          "kind": "import-statement",
+          "original": "../shared/content-support.js"
+        },
+        {
+          "path": "src/modules/learning/content.js",
+          "kind": "import-statement",
+          "original": "../modules/learning/content.js"
+        },
+        {
+          "path": "src/modules/checkin/content.js",
+          "kind": "import-statement",
+          "original": "../modules/checkin/content.js"
+        },
+        {
+          "path": "src/modules/slider/content.js",
+          "kind": "import-statement",
+          "original": "../modules/slider/content.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/slider-captcha-frame.js": {
+      "bytes": 1475,
+      "imports": [
+        {
+          "path": "src/shared/content-runtime.js",
+          "kind": "import-statement",
+          "original": "../shared/content-runtime.js"
+        },
+        {
+          "path": "src/shared/content-support.js",
+          "kind": "import-statement",
+          "original": "../shared/content-support.js"
+        },
+        {
+          "path": "src/modules/slider/content.js",
+          "kind": "import-statement",
+          "original": "../modules/slider/content.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/vendor/react-dom-and-shared-icons.js": {
+      "bytes": 420119,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/shared/ui-scope.js": {
+      "bytes": 1342,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/shared/ui-runtime.js": {
+      "bytes": 30904,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "./ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/vendor/ui-motion-runtime.js": {
+      "bytes": 342233,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/sites/view.js": {
+      "bytes": 189064,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/records/view.js": {
+      "bytes": 64437,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/proxies/view.js": {
+      "bytes": 169044,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/accounts/batch-input.js": {
+      "bytes": 4832,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/modules/accounts/view.js": {
+      "bytes": 183989,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        },
+        {
+          "path": "src/modules/accounts/batch-input.js",
+          "kind": "import-statement",
+          "original": "./batch-input.js"
+        },
+        {
+          "path": "src/modules/accounts/batch-input.js",
+          "kind": "import-statement",
+          "original": "./batch-input.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/shared/ui-components.js": {
+      "bytes": 13812,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "./ui-scope.js"
+        },
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/shared/ui-runtime.js",
+          "kind": "import-statement",
+          "original": "./ui-runtime.js"
+        },
+        {
+          "path": "src/vendor/ui-motion-runtime.js",
+          "kind": "import-statement",
+          "original": "../vendor/ui-motion-runtime.js"
+        },
+        {
+          "path": "src/modules/sites/view.js",
+          "kind": "import-statement",
+          "original": "../modules/sites/view.js"
+        },
+        {
+          "path": "src/modules/records/view.js",
+          "kind": "import-statement",
+          "original": "../modules/records/view.js"
+        },
+        {
+          "path": "src/modules/proxies/view.js",
+          "kind": "import-statement",
+          "original": "../modules/proxies/view.js"
+        },
+        {
+          "path": "src/modules/accounts/view.js",
+          "kind": "import-statement",
+          "original": "../modules/accounts/view.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/vendor/action-icons.js": {
+      "bytes": 4134,
+      "imports": [
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "./react-dom-and-shared-icons.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/settings/view.js": {
+      "bytes": 38823,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/learning/view.js": {
+      "bytes": 49564,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/modules/checkin/view.js": {
+      "bytes": 55029,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/vendor/ui-search-runtime.js": {
+      "bytes": 480950,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-scope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/management-app.js": {
+      "bytes": 82049,
+      "imports": [
+        {
+          "path": "src/shared/ui-scope.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-scope.js"
+        },
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/shared/ui-components.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-components.js"
+        },
+        {
+          "path": "src/vendor/action-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/action-icons.js"
+        },
+        {
+          "path": "src/shared/ui-runtime.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-runtime.js"
+        },
+        {
+          "path": "src/vendor/ui-motion-runtime.js",
+          "kind": "import-statement",
+          "original": "../vendor/ui-motion-runtime.js"
+        },
+        {
+          "path": "src/modules/sites/view.js",
+          "kind": "import-statement",
+          "original": "../modules/sites/view.js"
+        },
+        {
+          "path": "src/modules/settings/view.js",
+          "kind": "import-statement",
+          "original": "../modules/settings/view.js"
+        },
+        {
+          "path": "src/modules/learning/view.js",
+          "kind": "import-statement",
+          "original": "../modules/learning/view.js"
+        },
+        {
+          "path": "src/modules/checkin/view.js",
+          "kind": "import-statement",
+          "original": "../modules/checkin/view.js"
+        },
+        {
+          "path": "src/modules/proxies/view.js",
+          "kind": "import-statement",
+          "original": "../modules/proxies/view.js"
+        },
+        {
+          "path": "src/modules/records/view.js",
+          "kind": "import-statement",
+          "original": "../modules/records/view.js"
+        },
+        {
+          "path": "src/modules/accounts/view.js",
+          "kind": "import-statement",
+          "original": "../modules/accounts/view.js"
+        },
+        {
+          "path": "src/vendor/ui-search-runtime.js",
+          "kind": "import-statement",
+          "original": "../vendor/ui-search-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/management-page.js": {
+      "bytes": 387,
+      "imports": [
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/shared/ui-components.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-components.js"
+        },
+        {
+          "path": "src/entries/management-app.js",
+          "kind": "import-statement",
+          "original": "./management-app.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/sidepanel-page.js": {
+      "bytes": 392,
+      "imports": [
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/shared/ui-components.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-components.js"
+        },
+        {
+          "path": "src/entries/management-app.js",
+          "kind": "import-statement",
+          "original": "./management-app.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/previews/design-preview.js": {
+      "bytes": 176577,
+      "imports": [
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/vendor/action-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/action-icons.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/design-preview-page.js": {
+      "bytes": 40,
+      "imports": [
+        {
+          "path": "src/previews/design-preview.js",
+          "kind": "import-statement",
+          "original": "../previews/design-preview.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/previews/layout-preview.js": {
+      "bytes": 2783,
+      "imports": [
+        {
+          "path": "src/vendor/react-dom-and-shared-icons.js",
+          "kind": "import-statement",
+          "original": "../vendor/react-dom-and-shared-icons.js"
+        },
+        {
+          "path": "src/shared/ui-components.js",
+          "kind": "import-statement",
+          "original": "../shared/ui-components.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/entries/layout-preview-page.js": {
+      "bytes": 40,
+      "imports": [
+        {
+          "path": "src/previews/layout-preview.js",
+          "kind": "import-statement",
+          "original": "../previews/layout-preview.js"
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "outputs": {
+    "output/chrome-mv3/background/checkin-service.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 1079410
+    },
+    "output/chrome-mv3/background/checkin-service.js": {
+      "imports": [],
+      "exports": [],
+      "entryPoint": "src/entries/background.js",
+      "inputs": {
+        "src/shared/background-platform.js": {
+          "bytesInOutput": 39457
+        },
+        "src/modules/slider/service.js": {
+          "bytesInOutput": 72715
+        },
+        "src/modules/records/service.js": {
+          "bytesInOutput": 31084
+        },
+        "src/modules/proxies/service.js": {
+          "bytesInOutput": 70085
+        },
+        "src/modules/learning/service.js": {
+          "bytesInOutput": 90719
+        },
+        "src/modules/settings/service.js": {
+          "bytesInOutput": 4202
+        },
+        "src/modules/checkin/service.js": {
+          "bytesInOutput": 124834
+        },
+        "src/modules/sites/service.js": {
+          "bytesInOutput": 91086
+        },
+        "src/modules/accounts/service.js": {
+          "bytesInOutput": 39451
+        },
+        "src/entries/background.js": {
+          "bytesInOutput": 25276
+        }
+      },
+      "bytes": 589291
+    },
+    "output/chrome-mv3/content-scripts/auto-login.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 1213033
+    },
+    "output/chrome-mv3/content-scripts/auto-login.js": {
+      "imports": [],
+      "exports": [],
+      "entryPoint": "src/entries/auto-login.js",
+      "inputs": {
+        "src/shared/content-runtime.js": {
+          "bytesInOutput": 729
+        },
+        "src/shared/content-support.js": {
+          "bytesInOutput": 45029
+        },
+        "src/modules/learning/content.js": {
+          "bytesInOutput": 63005
+        },
+        "src/modules/checkin/content.js": {
+          "bytesInOutput": 415540
+        },
+        "src/modules/slider/content.js": {
+          "bytesInOutput": 125858
+        },
+        "src/entries/auto-login.js": {
+          "bytesInOutput": 1090
+        }
+      },
+      "bytes": 651480
+    },
+    "output/chrome-mv3/content-scripts/slider-captcha-frame.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 314354
+    },
+    "output/chrome-mv3/content-scripts/slider-captcha-frame.js": {
+      "imports": [],
+      "exports": [],
+      "entryPoint": "src/entries/slider-captcha-frame.js",
+      "inputs": {
+        "src/shared/content-runtime.js": {
+          "bytesInOutput": 729
+        },
+        "src/shared/content-support.js": {
+          "bytesInOutput": 16398
+        },
+        "src/modules/slider/content.js": {
+          "bytesInOutput": 57643
+        },
+        "src/entries/slider-captcha-frame.js": {
+          "bytesInOutput": 1191
+        }
+      },
+      "bytes": 76125
+    },
+    "output/chrome-mv3/chunks/management-page.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 672
+    },
+    "output/chrome-mv3/chunks/management-page.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-EMVCZFMU.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-CR5LZACA.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-7HSGGT63.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [],
+      "entryPoint": "src/entries/management-page.js",
+      "inputs": {
+        "src/entries/management-page.js": {
+          "bytesInOutput": 155
+        }
+      },
+      "bytes": 357
+    },
+    "output/chrome-mv3/chunks/sidepanel-page.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 676
+    },
+    "output/chrome-mv3/chunks/sidepanel-page.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-EMVCZFMU.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-CR5LZACA.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-7HSGGT63.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [],
+      "entryPoint": "src/entries/sidepanel-page.js",
+      "inputs": {
+        "src/entries/sidepanel-page.js": {
+          "bytesInOutput": 160
+        }
+      },
+      "bytes": 361
+    },
+    "output/chrome-mv3/chunks/shared-EMVCZFMU.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 1133878
+    },
+    "output/chrome-mv3/chunks/shared-EMVCZFMU.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-CR5LZACA.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-7HSGGT63.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [
+        "ManagementApp"
+      ],
+      "inputs": {
+        "src/modules/settings/view.js": {
+          "bytesInOutput": 35353
+        },
+        "src/modules/learning/view.js": {
+          "bytesInOutput": 43479
+        },
+        "src/modules/checkin/view.js": {
+          "bytesInOutput": 51005
+        },
+        "src/vendor/ui-search-runtime.js": {
+          "bytesInOutput": 478151
+        },
+        "src/entries/management-app.js": {
+          "bytesInOutput": 74473
+        }
+      },
+      "bytes": 683605
+    },
+    "output/chrome-mv3/chunks/design-preview-page.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 300858
+    },
+    "output/chrome-mv3/chunks/design-preview-page.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-CR5LZACA.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [],
+      "entryPoint": "src/entries/design-preview-page.js",
+      "inputs": {
+        "src/previews/design-preview.js": {
+          "bytesInOutput": 166106
+        },
+        "src/entries/design-preview-page.js": {
+          "bytesInOutput": 0
+        }
+      },
+      "bytes": 166499
+    },
+    "output/chrome-mv3/chunks/shared-CR5LZACA.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 7952
+    },
+    "output/chrome-mv3/chunks/shared-CR5LZACA.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [
+        "E",
+        "O",
+        "S",
+        "b",
+        "c",
+        "f",
+        "g",
+        "i",
+        "m",
+        "n",
+        "o",
+        "u",
+        "v",
+        "w"
+      ],
+      "inputs": {
+        "src/vendor/action-icons.js": {
+          "bytesInOutput": 3602
+        }
+      },
+      "bytes": 3759
+    },
+    "output/chrome-mv3/chunks/layout-preview-page.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 5496
+    },
+    "output/chrome-mv3/chunks/layout-preview-page.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-7HSGGT63.js",
+          "kind": "import-statement"
+        },
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [],
+      "entryPoint": "src/entries/layout-preview-page.js",
+      "inputs": {
+        "src/previews/layout-preview.js": {
+          "bytesInOutput": 2434
+        },
+        "src/entries/layout-preview-page.js": {
+          "bytesInOutput": 0
+        }
+      },
+      "bytes": 2623
+    },
+    "output/chrome-mv3/chunks/shared-7HSGGT63.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 1680650
+    },
+    "output/chrome-mv3/chunks/shared-7HSGGT63.js": {
+      "imports": [
+        {
+          "path": "output/chrome-mv3/chunks/shared-RH4UF5PN.js",
+          "kind": "import-statement"
+        }
+      ],
+      "exports": [
+        "appRuntime",
+        "appRuntime2",
+        "appRuntime3",
+        "appRuntime4",
+        "appRuntime5",
+        "appRuntime6",
+        "createUiModuleRuntime",
+        "createUiScope",
+        "initializeUiScope",
+        "uiExport_A",
+        "uiExport_C",
+        "uiExport_D",
+        "uiExport_E",
+        "uiExport_M",
+        "uiExport_N",
+        "uiExport_O",
+        "uiExport_P",
+        "uiExport_S",
+        "uiExport_T",
+        "uiExport__",
+        "uiExport_b",
+        "uiExport_c",
+        "uiExport_d",
+        "uiExport_f",
+        "uiExport_g",
+        "uiExport_h",
+        "uiExport_i",
+        "uiExport_j",
+        "uiExport_k",
+        "uiExport_l",
+        "uiExport_m",
+        "uiExport_n",
+        "uiExport_o",
+        "uiExport_p",
+        "uiExport_r",
+        "uiExport_s",
+        "uiExport_t",
+        "uiExport_u",
+        "uiExport_v",
+        "uiExport_w",
+        "uiExport_x",
+        "uiExport_y"
+      ],
+      "inputs": {
+        "src/shared/ui-scope.js": {
+          "bytesInOutput": 1099
+        },
+        "src/shared/ui-runtime.js": {
+          "bytesInOutput": 29619
+        },
+        "src/vendor/ui-motion-runtime.js": {
+          "bytesInOutput": 316331
+        },
+        "src/modules/sites/view.js": {
+          "bytesInOutput": 174868
+        },
+        "src/modules/records/view.js": {
+          "bytesInOutput": 60210
+        },
+        "src/modules/proxies/view.js": {
+          "bytesInOutput": 158224
+        },
+        "src/modules/accounts/batch-input.js": {
+          "bytesInOutput": 4598
+        },
+        "src/modules/accounts/view.js": {
+          "bytesInOutput": 164676
+        },
+        "src/shared/ui-components.js": {
+          "bytesInOutput": 12226
+        }
+      },
+      "bytes": 922982
+    },
+    "output/chrome-mv3/chunks/shared-RH4UF5PN.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 766970
+    },
+    "output/chrome-mv3/chunks/shared-RH4UF5PN.js": {
+      "imports": [],
+      "exports": [
+        "Be",
+        "C",
+        "Ce",
+        "De",
+        "He",
+        "Ie",
+        "Je",
+        "Ke",
+        "Me",
+        "Pe",
+        "Qe",
+        "Re",
+        "Te",
+        "We",
+        "Xe",
+        "_e",
+        "c",
+        "de",
+        "et",
+        "f",
+        "g",
+        "he",
+        "it",
+        "je",
+        "ke",
+        "nt",
+        "pe",
+        "v",
+        "w",
+        "xe",
+        "ye"
+      ],
+      "inputs": {
+        "src/vendor/react-dom-and-shared-icons.js": {
+          "bytesInOutput": 367280
+        }
+      },
+      "bytes": 367516
+    }
+  }
+}

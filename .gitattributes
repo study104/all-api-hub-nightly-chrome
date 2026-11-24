@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.png binary
+public/opencv/opencv.js -text
+output/chrome-mv3/opencv/opencv.js -text
