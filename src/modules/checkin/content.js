@@ -1,10 +1,30 @@
 import { bindContentState } from '../../shared/content-runtime.js';
+import {
+  SiteIdentityResolver,
+  compareAccountIdentity,
+  findIdentityMatch,
+  identitiesEqual,
+  identitySourceLabel,
+  identitySampleKey,
+  parseIdentityResponse,
+  readIdentitySource,
+  readVisibleAccountIdentity,
+  resolveIdentityPage,
+  stableIdentitySamples,
+} from '../../shared/account-identity.js';
+import { LoginStateResolver, classifyLoginState, loginStateLog } from '../../shared/login-state.js';
+import { readSiteLoginEvidence, withSiteIdentityRecipe } from '../../shared/site-login-recipes.js';
 
 /** 签到执行内容逻辑：登录、身份闸门、工作流回放、签到确认和任务进度。  */
 export function createCheckinAutoContent(__contentScope) {
+  let identityResolver;
+  const directLoginLabel =
+    /^(?:登录|登陆|登入|立即登录|继续登录|前往登录|sign[\s-]?in|log[\s-]?in)[.!。！›»>→]*$/i;
   const __contentState = bindContentState(__contentScope, [
     'detectPageLogin',
     'readLoginOptions',
+    'readLoginSnapshot',
+    'readLoginState',
     'hasVisibleLogoutControl',
     'describeLoginControl',
     'findSelectedLoginControl',
@@ -1153,14 +1173,39 @@ export function createCheckinAutoContent(__contentScope) {
   }
 
   function On(e) {
-    if ((0, __contentScope.V)(e.selectors.password, document) && (0, __contentScope.kn)())
-      return !0;
-    let t = (0, __contentScope.Tn)(e.selectors.username, document);
+    const selectors = e.selectors ?? {};
+    if ((0, __contentScope.V)(selectors.password, document) && (0, __contentScope.kn)()) return !0;
+    let t = (0, __contentScope.Tn)(selectors.username, document);
     if (!t) return !1;
     let n = t.element;
-    if (/^(?:username|email)$/i.test(n.autocomplete) || n.type.toLowerCase() === `email`) return !0;
     let r = (0, __contentScope.Cn)(n);
-    return __contentScope.nn.test(r) && !__contentScope.rn.test(r);
+    if (__contentScope.rn.test(r)) return !1;
+    if (
+      !/^(?:username|email)$/i.test(n.autocomplete) &&
+      n.type.toLowerCase() !== `email` &&
+      !__contentScope.nn.test(r)
+    )
+      return !1;
+    // A profile's editable email/username is not a login form. Username-only
+    // login steps also need a login route, heading, or an actual sign-in action.
+    const region = n.form ?? n.closest?.(`form, [role="dialog"], main, section`) ?? document,
+      heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`),
+      title = heading?.innerText ?? heading?.textContent ?? ``,
+      registration = /注册|创建(?:新)?账号|sign\s*up|create\s+(?:an?\s+)?account/i.test(title),
+      loginRoute = /(?:^|\/)(?:login|sign-?in)(?:\/|$)/i.test(
+        `${location.pathname}${location.hash.replace(/^#/, `/`)}`,
+      ),
+      loginHeading = /登录|登入|sign\s*in|log\s*in/i.test(title),
+      loginAction = [
+        ...(region.querySelectorAll?.(`button, [role="button"], input[type="submit"]`) ?? []),
+      ].some(
+        (control) =>
+          (0, __contentScope.O)(control) &&
+          /^(?:登录|登陆|登入|立即登录|继续登录|sign\s*in|log\s*in)$/i.test(
+            (control.innerText || control.textContent || control.value || ``).trim(),
+          ),
+      );
+    return !registration && (loginRoute || loginHeading || loginAction);
   }
 
   function kn() {
@@ -1202,6 +1247,12 @@ export function createCheckinAutoContent(__contentScope) {
           : e.selector;
   }
 
+  function isLoginHelpControl(control) {
+    return /为什么|为何|如何|怎么|怎样|教程|指南|帮助|文档|常见(?:问答|问题)|问题解答|\b(?:how|why|what|faq|help|documentation|docs?|tutorial|guide)\b|[?？]\s*$/i.test(
+      (0, __contentScope.Rn)(control),
+    );
+  }
+
   function Nn() {
     let e;
     try {
@@ -1210,7 +1261,7 @@ export function createCheckinAutoContent(__contentScope) {
       return null;
     }
     for (let t of document.querySelectorAll(`a[href]`))
-      if ((0, __contentScope.O)(t))
+      if ((0, __contentScope.O)(t) && !isLoginHelpControl(t))
         try {
           let n = new URL(t.href, e.href),
             r = n.pathname === e.pathname && n.search === e.search;
@@ -1222,12 +1273,12 @@ export function createCheckinAutoContent(__contentScope) {
 
   function In() {
     for (let e of document.querySelectorAll(`button, [role="button"]`)) {
-      if (!(0, __contentScope.O)(e)) continue;
-      let t = (e.innerText || e.textContent || ``).replace(/\s+/g, ``).toLowerCase();
+      if (!(0, __contentScope.O)(e) || isLoginHelpControl(e)) continue;
+      let t = (0, __contentScope.Rn)(e).replace(/\s+/g, ``).toLowerCase();
       if (
         t &&
         !__contentScope.Fn.some((e) => t.includes(e.replace(/\s+/g, ``))) &&
-        __contentScope.Pn.some((e) => t.includes(e))
+        (directLoginLabel.test(t) || __contentScope.Pn.some((e) => t.includes(e)))
       )
         return e;
     }
@@ -1348,7 +1399,7 @@ export function createCheckinAutoContent(__contentScope) {
           `button, a[href], [role="button"], input[type="button"], input[type="submit"]`,
         ),
       ]
-        .filter((e) => (0, __contentScope.O)(e))
+        .filter((e) => (0, __contentScope.O)(e) && !isLoginHelpControl(e))
         .filter((t) => {
           let n = (0, __contentScope.zn)(t);
           return e === `github`
@@ -1372,8 +1423,9 @@ export function createCheckinAutoContent(__contentScope) {
   }
 
   function describeLoginControl(control) {
-    if (!(0, __contentScope.O)(control)) return null;
+    if (!(0, __contentScope.O)(control) || isLoginHelpControl(control)) return null;
     const matchText = (0, __contentScope.Rn)(control).replace(/\s+/g, ` `).trim().slice(0, 120);
+    if (directLoginLabel.test(matchText)) return null;
     let hrefPath = ``,
       url = null;
     try {
@@ -1473,7 +1525,11 @@ export function createCheckinAutoContent(__contentScope) {
         ...(hrefPath ? { hrefPath } : {}),
       };
     }
-    if (!authPath && !/oauth|openid|oidc|sso|第三方|授权/i.test(semantic)) return null;
+    const authorizationAction =
+      /^(?:第三方(?:账号)?登录|授权(?:登录|并登录)?|(?:使用|通过|用).+(?:登录|登陆|登入|继续)|(?:sign[\s-]?in|log[\s-]?in)\s+with\s+.+|continue\s+with\s+.+|(?:oauth|openid|oidc|sso)(?:\s+(?:login|sign[\s-]?in))?)[.!。！›»>→]*$/i.test(
+        matchText,
+      );
+    if (!authPath && !authorizationAction) return null;
     let hash = 2166136261;
     for (const char of `${matchText}|${hrefPath}`)
       hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
@@ -1690,7 +1746,10 @@ export function createCheckinAutoContent(__contentScope) {
   }
 
   function nr() {
-    return (0, __contentScope.D)(__contentScope.$t) ? `二次验证验证码` : null;
+    return (0, __contentScope.D)(__contentScope.$t) ||
+      (typeof __contentScope.zp === `function` && (0, __contentScope.zp)())
+      ? `二次验证验证码`
+      : null;
   }
 
   function rr(e) {
@@ -1715,18 +1774,145 @@ export function createCheckinAutoContent(__contentScope) {
   }
 
   function ar(e) {
-    if ((0, __contentScope.On)(e) || (0, __contentScope.nr)()) return !1;
-    if (e.successIndicator && (0, __contentScope.D)(e.successIndicator)) return !0;
-    let t = e.checkin;
-    return (t?.method === `button` &&
-      ((t.buttonSelector && (0, __contentScope.D)(t.buttonSelector)) ||
-        (t.alreadySelector && (0, __contentScope.D)(t.alreadySelector)))) ||
-      (0, __contentScope.Ln)() ||
-      (0, __contentScope.rr)(e)
-      ? !0
-      : (0, __contentScope.Dn)(e) || (0, __contentScope.Nn)()
-        ? !1
-        : t?.method === `api`;
+    return classifyLoginState((0, __contentScope.readLoginSnapshot)(e)).status === `authenticated`;
+  }
+
+  function readLoginSnapshot(site) {
+    const visible = (selector) => {
+        if (!selector) return !1;
+        const control = (0, __contentScope.D)(selector);
+        return !!control && (0, __contentScope.O)(control);
+      },
+      authenticationRoute = /(?:^|\/)(?:login|sign-?in|auth|oauth|callback)(?:\/|$)/i.test(
+        `${location.pathname}${location.hash.replace(/^#/, `/`)}`,
+      ),
+      profileEditorContext =
+        /(?:^|\/)(?:profile|personal|settings|account(?:-settings)?|security-password)(?:\/|$)/i.test(
+          location.pathname,
+        ),
+      siteEvidence = readSiteLoginEvidence(site, document, location, (node) =>
+        (0, __contentScope.O)(node),
+      ),
+      logoutControl = (0, __contentScope.hasVisibleLogoutControl)(site, siteEvidence),
+      authenticationFormHeading = [
+        ...(document.querySelectorAll?.(`form, [role="dialog"]`) ?? []),
+      ].some((region) => {
+        if (!(0, __contentScope.O)(region)) return !1;
+        const heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`),
+          title = [region.getAttribute?.(`aria-label`), heading?.innerText ?? heading?.textContent]
+            .filter(Boolean)
+            .join(` `);
+        return (
+          /登录|登入|sign\s*in|log\s*in/i.test(title) &&
+          !/修改|重置|change|reset|update/i.test(title)
+        );
+      }),
+      loginForm =
+        (0, __contentScope.On)(site) &&
+        (!profileEditorContext || authenticationRoute || authenticationFormHeading),
+      providerEntry = [
+        ...document.querySelectorAll(
+          `button, a[href], [role="button"], input[type="button"], input[type="submit"]`,
+        ),
+      ].some(
+        (control) =>
+          !control.closest?.(`footer, [role="contentinfo"]`) &&
+          !!(0, __contentScope.describeLoginControl)(control),
+      ),
+      loginLink = (0, __contentScope.Nn)(),
+      loginButton = (0, __contentScope.In)(),
+      loginEntry =
+        providerEntry ||
+        (!!loginButton && !loginButton.closest?.(`footer, [role="contentinfo"]`)) ||
+        (!!loginLink && !loginLink.closest?.(`footer, [role="contentinfo"]`)),
+      secondFactor = (0, __contentScope.nr)(),
+      challenge = typeof __contentScope.Nu === `function` ? (0, __contentScope.Nu)(!1) : null,
+      completionRequired = [
+        ...(document.querySelectorAll?.(`form, [role="dialog"], main`) ?? []),
+      ].some((region) => {
+        if (!(0, __contentScope.O)(region)) return !1;
+        const heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`),
+          title = heading?.innerText ?? heading?.textContent ?? ``;
+        return (
+          /^(?:完成(?:注册|资料|账号设置)|补充(?:资料|信息)|绑定(?:邮箱|手机)|注册|创建(?:新)?账号|complete\s+(?:your\s+)?(?:profile|account|registration)|finish\s+(?:registration|setup)|create\s+(?:an?\s+)?account|sign\s*up)/i.test(
+            title.trim(),
+          ) &&
+          [...(region.querySelectorAll?.(`input, select, textarea`) ?? [])].some(
+            (input) =>
+              !input.disabled &&
+              !input.readOnly &&
+              input.type !== `hidden` &&
+              (0, __contentScope.O)(input),
+          )
+        );
+      }),
+      failureNodes = document.querySelectorAll?.(
+        `[role="alert"], [aria-live="assertive"], .error-message, .semi-toast-content, .semi-notification-content, .ant-message-notice-content, .ant-notification-notice-message`,
+      ),
+      authenticationContext =
+        loginForm ||
+        authenticationRoute ||
+        (loginEntry && !logoutControl && !siteEvidence.accountShellVisible),
+      loginError = [
+        (0, __contentScope.Un)(),
+        ...[...(failureNodes ?? [])]
+          .filter((node) => (0, __contentScope.O)(node))
+          .map((node) => node.innerText || node.textContent || ``),
+      ]
+        .filter(Boolean)
+        .map((text) => text.replace(/\s+/g, ` `).trim())
+        .find((text) => {
+          if (
+            /登录(?:状态|会话)?.{0,16}(?:已失效|已过期|过期)|(?:当前|登录)?会话.{0,16}(?:过期|失效)|请重新登录|\b(?:your\s+)?(?:login\s+)?session\s+(?:has\s+)?expired\b|(?:log|sign)\s*in\s+again/i.test(
+              text,
+            )
+          )
+            return !0;
+          if (
+            profileEditorContext &&
+            !authenticationContext &&
+            /密码|password|绑定|解绑|\bbind\b|\bunlink\b|\bconnect\b/i.test(text)
+          )
+            return !1;
+          if (authenticationContext) return __contentScope.Hn.test(text);
+          if (
+            /签到|打卡|抽奖|余额|额度|领取|兑换|check[\s-]?in|daily\s+(?:bonus|reward)|balance|quota|points|credits|claim/i.test(
+              text,
+            )
+          )
+            return !1;
+          return /(?:用户名|账号|邮箱|密码|凭据).{0,16}(?:错误|不正确|无效|不存在|锁定)|(?:invalid|incorrect|wrong|bad).{0,16}(?:password|credentials?)|(?:password|credentials?).{0,16}(?:invalid|incorrect|wrong)|(?:登录|authentication|authorization|oauth).{0,24}(?:失败|拒绝|failed|denied|rejected)/i.test(
+            text,
+          );
+        })
+        ?.slice(0, 160);
+    return {
+      sameOrigin: location.origin === (0, __contentScope.Dr)(site),
+      loginForm,
+      loginEntry,
+      secondFactor,
+      challenge,
+      completionRequired,
+      loginError,
+      successIndicator: visible(site.successIndicator),
+      logoutControl,
+      logoutSource: siteEvidence.logoutSource,
+      accountShellVisible: siteEvidence.accountShellVisible,
+      accountShellSource: siteEvidence.accountShellSource,
+      checkinControl:
+        site.checkin?.method === `button` &&
+        (visible(site.checkin.buttonSelector) || visible(site.checkin.alreadySelector)),
+    };
+  }
+
+  async function readLoginState(site, options = {}) {
+    const resolver = new LoginStateResolver({
+      readPage: (selected) => (0, __contentScope.readLoginSnapshot)(selected),
+      readIdentity: (selected, readOptions) =>
+        (0, __contentScope.qi)(selected, void 0, readOptions),
+      sleep: (ms) => (0, __contentScope.w)(ms),
+    });
+    return resolver.wait(withSiteIdentityRecipe(site), options);
   }
 
   async function U(e, t, n) {
@@ -2222,45 +2408,54 @@ export function createCheckinAutoContent(__contentScope) {
     for (; Date.now() < i;) {
       if (location.href !== r)
         return (t.push(`已离开登录页，等待授权流程返回本站(${location.pathname})`), !0);
-      if ((0, __contentScope.ar)(e)) return !0;
+      // A popup may finish OAuth without changing the opener's URL. Continue
+      // verification in this content run instead of waiting for a navigation event.
+      if ((0, __contentScope.ar)(e)) return !1;
+      const page = (0, __contentScope.readLoginSnapshot)(e);
+      if (
+        page.sameOrigin &&
+        !page.loginForm &&
+        !page.loginEntry &&
+        !page.secondFactor &&
+        !page.challenge
+      ) {
+        await (0, __contentScope.readLoginState)(e, {
+          timeoutMs: Math.min(3000, Math.max(1, i - Date.now())),
+          diagnostics: t,
+        });
+        if (location.href !== r)
+          return (t.push(`已离开登录页，等待授权流程返回本站(${location.pathname})`), !0);
+        return !1;
+      }
       await (0, __contentScope.w)(250);
     }
     return !1;
   }
 
-  async function br(e, t, n = 6e3) {
-    let i = Date.now() + n;
-    for (;;) {
-      if ((0, __contentScope.ar)(e)) return (t.push(`命中登录成功证据，已处于登录状态`), !0);
-      if ((0, __contentScope.On)(e)) return (t.push(`发现登录表单，需要重新登录`), !1);
-      if ((0, __contentScope.nr)()) return (t.push(`发现二次验证输入框，需要登录`), !1);
-      if (Date.now() >= i) break;
-      await (0, __contentScope.w)(300);
-    }
-    return (t.push(`未发现足够的登录成功证据`), !1);
+  async function br(e, t, n = 6e3, options = {}) {
+    const state = await (0, __contentScope.readLoginState)(e, {
+      timeoutMs: n,
+      stopOnLoginForm: !0,
+      diagnostics: t,
+      ...options,
+    });
+    options.onResult?.(state);
+    t.push(loginStateLog(state));
+    if (state.status === `authenticated`) return (t.push(`命中登录成功证据，已处于登录状态`), !0);
+    if (state.reason === `login_form_visible`) t.push(`发现登录表单，需要重新登录`);
+    else if (state.reason === `second_factor_pending`) t.push(`发现二次验证输入框，需要登录`);
+    return !1;
   }
 
-  async function xr(e, t) {
-    let n = Date.now() + 8e3;
-    for (; Date.now() < n;) {
-      if ((0, __contentScope.ar)(e))
-        return (
-          t.push(
-            e.successIndicator ? `命中登录成功标志` : `登录页已离开，并找到可验证的登录后状态`,
-          ),
-          !0
-        );
-      if ((0, __contentScope.nr)()) break;
-      await (0, __contentScope.w)(300);
-    }
-    return (
-      t.push(
-        (0, __contentScope.nr)()
-          ? `登录后进入二次验证步骤`
-          : `登录后缺少明确成功证据，可能凭据错误或站点需要补充成功标志`,
-      ),
-      !1
-    );
+  async function xr(e, t, options = {}) {
+    const state = await (0, __contentScope.readLoginState)(e, {
+      timeoutMs: 8e3,
+      diagnostics: t,
+      ...options,
+    });
+    options.onResult?.(state);
+    t.push(loginStateLog(state));
+    return state.status === `authenticated`;
   }
 
   function Tr() {
@@ -2319,20 +2514,8 @@ export function createCheckinAutoContent(__contentScope) {
     return typeof e == `string` && e.trim() ? e.trim() : void 0;
   }
 
-  function Mr(e) {
-    let t = e.identitySource;
-    if (!t || typeof t != `object` || Array.isArray(t)) return null;
-    let n = t,
-      r = {
-        storageKey: (0, __contentScope.jr)(n.storageKey),
-        storageType: (0, __contentScope.Ar)(n.storageType),
-        endpoint: (0, __contentScope.jr)(n.endpoint),
-        tokenKey: (0, __contentScope.jr)(n.tokenKey),
-        tokenStorageType: (0, __contentScope.Ar)(n.tokenStorageType),
-        tokenHeader: (0, __contentScope.jr)(n.tokenHeader),
-        tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0,
-      };
-    return !r.storageKey && !r.endpoint ? null : r;
+  function Mr(site) {
+    return readIdentitySource(withSiteIdentityRecipe(site));
   }
 
   function Nr(e, t) {
@@ -2616,91 +2799,12 @@ export function createCheckinAutoContent(__contentScope) {
     return (r.done() || (0, __contentScope.G)(`数据尾部有多余字节`), i);
   }
 
-  function xi(e) {
-    return e === `api`
-      ? `站点接口`
-      : e === `storage`
-        ? `本地登录态`
-        : e === `visible`
-          ? `页面文本`
-          : `未知来源`;
+  function xi(source) {
+    return identitySourceLabel(source);
   }
 
-  function Si(e) {
-    const record = (value) => !!value && typeof value === `object` && !Array.isArray(value);
-    const successful = (value) => {
-      if (value.success === !1 || value.ok === !1 || value.status === !1) return !1;
-      if (/^(?:error|failed|failure|unauthorized|forbidden)$/i.test(String(value.status ?? ``)))
-        return !1;
-      if (value.code != null && !/^(?:0|200|success|ok)$/i.test(String(value.code).trim()))
-        return !1;
-      return !0;
-    };
-    const scalar = (value) => {
-      if (typeof value === `string` && value.trim()) return value.trim();
-      if (typeof value === `number` && Number.isFinite(value)) return String(value);
-    };
-    const identifier = (value) => {
-      if (typeof value === `number`)
-        return Number.isSafeInteger(value) && value >= 0 ? String(value) : void 0;
-      if (typeof value === `string` && /^[\w.:-]{1,128}$/.test(value.trim())) return value.trim();
-    };
-    const identityKeys = [
-      `user`,
-      `current_user`,
-      `currentUser`,
-      `user_info`,
-      `userInfo`,
-      `profile`,
-      `identity`,
-    ];
-    const candidates = [];
-    const conflictingIds = new Set();
-    const seen = new Set();
-    function collect(value, depth = 0) {
-      if (!record(value) || depth > 3 || seen.has(value) || !successful(value)) return;
-      seen.add(value);
-      // A response envelope's ID may identify the request rather than its user.
-      // Only descend through documented identity containers, never user lists.
-      if (Object.prototype.hasOwnProperty.call(value, `data`)) {
-        collect(value.data, depth + 1);
-        for (const key of identityKeys) if (record(value[key])) collect(value[key], depth + 1);
-        return;
-      }
-      const nested = identityKeys.filter((key) => record(value[key]));
-      const directIds = new Set(
-        [value.id, value.user_id, value.userId, value.uid].map(identifier).filter(Boolean),
-      );
-      if (directIds.size > 1) for (const id of directIds) conflictingIds.add(id);
-      const direct = {
-        userId: directIds.size === 1 ? [...directIds][0] : void 0,
-        username: scalar(value.username) ?? scalar(value.user_name) ?? scalar(value.login),
-        email: scalar(value.email),
-        displayName:
-          scalar(value.display_name) ?? scalar(value.displayName) ?? scalar(value.nickname),
-      };
-      if (direct.userId || direct.username || direct.email) {
-        direct.username ??= scalar(value.name);
-        if (!nested.length || direct.username || direct.email || direct.displayName)
-          candidates.push(direct);
-      }
-      for (const key of nested) collect(value[key], depth + 1);
-    }
-    collect(e);
-    const ids = new Set([
-      ...conflictingIds,
-      ...candidates.map((value) => value.userId).filter(Boolean),
-    ]);
-    if (ids.size > 1)
-      return {
-        identityConflict: `身份接口同时返回不同用户 ID（${[...ids].join(`、`)}）`,
-      };
-    const result = {};
-    for (const field of [`userId`, `username`, `email`, `displayName`]) {
-      const values = [...new Set(candidates.map((value) => value[field]).filter(Boolean))];
-      if (values.length === 1) result[field] = values[0];
-    }
-    return Object.keys(result).length ? result : null;
+  function Si(response, fields) {
+    return parseIdentityResponse(response, fields);
   }
 
   function Ci() {
@@ -2720,6 +2824,18 @@ export function createCheckinAutoContent(__contentScope) {
 
   function Ti(e, t) {
     let n = t ? [t] : [`localStorage`, `sessionStorage`];
+    // Orevx restores the first complete auth bundle in one storage area. A
+    // stale local token must not hide the current sessionStorage login.
+    if (!t && e === `auth-token` && location.origin === `https://orevx.ai`)
+      for (const areaName of n)
+        try {
+          const area = areaName === `localStorage` ? localStorage : sessionStorage,
+            token = area.getItem(`auth-token`)?.trim(),
+            sessionId = area.getItem(`auth-session-id`)?.trim(),
+            storedUser = JSON.parse(area.getItem(`auth-user`) ?? `null`);
+          if (token && sessionId && Number.isSafeInteger(storedUser?.id) && storedUser.id > 0)
+            return token;
+        } catch {}
     for (let t of n)
       try {
         let n = (
@@ -2748,14 +2864,26 @@ export function createCheckinAutoContent(__contentScope) {
     }
   }
 
-  async function Di(e, t, n) {
-    if (!t.endpoint || !t.tokenKey || !(0, __contentScope.Nr)(e, t.endpoint)) return null;
+  async function Di(e, t, n, options = {}) {
+    if (
+      !t.endpoint ||
+      !t.tokenKey ||
+      location.origin !== (0, __contentScope.Dr)(e) ||
+      !(0, __contentScope.Nr)(e, t.endpoint)
+    )
+      return null;
+    const url = new URL(t.endpoint),
+      trace = (detail) =>
+        options.diagnostics?.push(`身份接口 ${url.origin}${url.pathname}（本站 Token）：${detail}`);
     let r = n ?? (0, __contentScope.Ti)(t.tokenKey, t.tokenStorageType);
-    if (!r) return null;
+    if (!r) return (trace(`当前页面没有可用的会话 Token（存储键 ${t.tokenKey}）`), null);
     let i = { Accept: `application/cbor, application/json` };
     i[t.tokenHeader ?? `Authorization`] = `${t.tokenPrefix ?? `Bearer `}${r}`;
     let a = new AbortController(),
-      o = setTimeout(() => a.abort(), __contentScope.yi);
+      o = setTimeout(
+        () => a.abort(),
+        Math.min(__contentScope.yi, Math.max(1, options.timeoutMs ?? __contentScope.yi)),
+      );
     try {
       let e = await fetch(t.endpoint, {
         method: `GET`,
@@ -2765,25 +2893,40 @@ export function createCheckinAutoContent(__contentScope) {
         redirect: `error`,
         signal: a.signal,
       });
-      if (!e.ok || e.redirected) return null;
+      if (!e.ok) return (trace(`HTTP ${e.status}`), null);
+      if (e.redirected || (e.url && new URL(e.url).href !== url.href))
+        return (trace(`响应发生跳转，未采用身份`), null);
       let n = e.headers.get(`content-type`)?.toLowerCase() ?? ``;
-      return n.includes(`cbor`)
-        ? (0, __contentScope._i)(new Uint8Array(await e.arrayBuffer()))
-        : n.includes(`json`)
-          ? await e.json().catch(() => null)
-          : null;
-    } catch {
+      if (n.includes(`cbor`) || n.includes(`json`)) {
+        const body = n.includes(`cbor`)
+          ? (0, __contentScope._i)(new Uint8Array(await e.arrayBuffer()))
+          : await e.json().catch(() => null);
+        if (body == null) trace(`JSON / CBOR 用户资料解析失败`);
+        return body;
+      }
+      trace(
+        n.includes(`html`)
+          ? `返回 HTML 页面，可能是访问验证或登录页`
+          : `响应不是 JSON / CBOR 用户资料`,
+      );
+      return null;
+    } catch (error) {
+      trace(error?.name === `AbortError` ? `请求超时` : `请求失败或被站点访问校验拦截`);
       return null;
     } finally {
       clearTimeout(o);
     }
   }
 
-  async function Oi(e, t, n) {
-    let r = await (0, __contentScope.Di)(e, t, n);
+  async function Oi(e, t, n, options = {}) {
+    let r = await (0, __contentScope.Di)(e, t, n, options);
     if (r == null) return null;
-    let i = (0, __contentScope.Si)(r);
-    return i ? { ...i, source: `api` } : null;
+    let i = (0, __contentScope.Si)(r, t.responseFields);
+    const url = new URL(t.endpoint),
+      endpoint = `${url.origin}${url.pathname}`;
+    if (!i)
+      options.diagnostics?.push(`身份接口 ${endpoint}（本站 Token）：未返回有效的当前用户字段`);
+    return i ? { ...i, source: `api`, endpoint } : null;
   }
 
   function Fi(e, t = !1) {
@@ -2887,147 +3030,12 @@ export function createCheckinAutoContent(__contentScope) {
     return (o && (t.email = o), t.userId || t.username || t.email ? t : null);
   }
 
-  function Bi() {
-    const textIdentity = (0, __contentScope.zi)((0, __contentScope.Li)());
-    if (typeof document.querySelectorAll !== `function`) return textIdentity;
-    const values = new Map();
-    const profileWords =
-      /个人资料|个人信息|我的(?:账户|账号|资料)|(?:^|[\s_-])(?:profile|personal|my[-_ ]account|account[-_ ](?:info|details)|user[-_ ]info)(?:$|[\s_-])/i;
-    const excludedWords =
-      /中奖|获奖|邀请|推荐|排行榜|用户列表|成员列表|公告|(?:^|[\s_-])(?:winners?|leaderboard|rankings?|user[-_ ]list|member[-_ ]list|invitation|referral|announcement)(?:$|[\s_-])/i;
-    const profilePath = /\/(?:profile|personal|account|account-settings|my-account)(?:\/|$)/i.test(
-      `${typeof location === `undefined` ? `` : location.pathname}${typeof location === `undefined` ? `` : location.hash}`,
+  function Bi(site) {
+    return readVisibleAccountIdentity(
+      document,
+      location,
+      site ? readIdentitySource(site) : undefined,
     );
-    function fieldName(label) {
-      const name = String(label ?? ``)
-        .replace(/[:：#*＊]/g, ``)
-        .replace(/[\s_-]+/g, ``)
-        .toLowerCase();
-      if (/^(?:用户id|用户编号|账号id|账户id|userid|uid|accountid)$/.test(name)) return `userId`;
-      if (
-        /^(?:用户名|登录名|账号名|账户名|账号|账户|当前(?:登录)?(?:账号|账户|用户)|我的(?:账号|账户)|username|loginname|account|currentuser|currentaccount|myaccount)$/.test(
-          name,
-        )
-      )
-        return `username`;
-      if (/^(?:邮箱|电子邮箱|电子邮件|我的邮箱|email|emailaddress)$/.test(name)) return `email`;
-      if (/^(?:昵称|显示名称|displayname|nickname)$/.test(name)) return `displayName`;
-      return null;
-    }
-    function metadata(node) {
-      return [
-        node.getAttribute?.(`aria-label`),
-        node.getAttribute?.(`title`),
-        node.getAttribute?.(`data-testid`),
-        node.id,
-        typeof node.className === `string` ? node.className : ``,
-      ]
-        .filter(Boolean)
-        .join(` `);
-    }
-    function excluded(node) {
-      if (!(0, __contentScope.Ii)(node)) return !0;
-      if (
-        node.closest?.(
-          `table, [role="table"], [role="grid"], [role="list"], [role="listitem"], .lottery-sidebar`,
-        )
-      )
-        return !0;
-      for (
-        let current = node;
-        current && !/^(?:BODY|HTML)$/.test(current.tagName);
-        current = current.parentElement
-      ) {
-        if (excludedWords.test(metadata(current))) return !0;
-        const heading = current.querySelector?.(
-          `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`,
-        );
-        if (heading && excludedWords.test(heading.innerText ?? heading.textContent ?? ``))
-          return !0;
-      }
-      const form = node.closest?.(`form`);
-      return !!form?.querySelector?.(`input[type="password"]`);
-    }
-    function profileArea(node, label) {
-      if (/^(?:当前|我的|current\s|my\s)/i.test(String(label ?? ``).trim())) return !0;
-      if (profilePath) return !0;
-      for (
-        let current = node;
-        current && !/^(?:BODY|HTML)$/.test(current.tagName);
-        current = current.parentElement
-      ) {
-        if (profileWords.test(metadata(current))) return !0;
-        const heading = current.querySelector?.(
-          `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`,
-        );
-        if (heading && profileWords.test(heading.innerText ?? heading.textContent ?? ``)) return !0;
-      }
-      return !1;
-    }
-    function add(label, node, value) {
-      const field = fieldName(label);
-      if (!field || !node || excluded(node) || !profileArea(node, label)) return;
-      const normalized = String(value ?? ``).trim();
-      if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return;
-      if (field === `userId` && !/^\d{1,16}$/.test(normalized)) return;
-      if (field === `username` && !/^[\p{L}\p{N}@][\p{L}\p{N}._+@'-]{1,79}$/u.test(normalized))
-        return;
-      if (field === `email` && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return;
-      const candidates = values.get(field) ?? new Set();
-      candidates.add(normalized);
-      values.set(field, candidates);
-    }
-    function controlValue(control) {
-      const tag = control?.tagName?.toUpperCase();
-      if (tag === `OUTPUT`) return control.innerText ?? control.textContent;
-      if (
-        (tag === `INPUT` || tag === `TEXTAREA`) &&
-        (control.readOnly ||
-          control.disabled ||
-          control.hasAttribute?.(`readonly`) ||
-          control.hasAttribute?.(`disabled`)) &&
-        !/^(?:password|hidden)$/i.test(control.type ?? ``)
-      )
-        return control.value;
-      return null;
-    }
-    for (const term of document.querySelectorAll(`dt`)) {
-      const description = term.nextElementSibling;
-      if (description?.tagName?.toUpperCase() !== `DD` || excluded(term)) continue;
-      add(
-        term.innerText ?? term.textContent,
-        description,
-        description.innerText ?? description.textContent,
-      );
-    }
-    for (const label of document.querySelectorAll(`label`)) {
-      if (excluded(label)) continue;
-      const id = label.htmlFor || label.getAttribute?.(`for`);
-      const control = id
-        ? document.getElementById?.(id)
-        : label.querySelector?.(`input, textarea, output`);
-      add(label.innerText ?? label.textContent, control, controlValue(control));
-    }
-    for (const control of document.querySelectorAll(
-      `input[readonly], input[disabled], textarea[readonly], textarea[disabled], output`,
-    )) {
-      const label =
-        control.getAttribute?.(`aria-label`) || control.getAttribute?.(`name`) || control.id;
-      add(label, control, controlValue(control));
-    }
-    const ids = new Set(values.get(`userId`) ?? []);
-    if (textIdentity?.userId) ids.add(textIdentity.userId);
-    if (textIdentity?.identityConflict) return textIdentity;
-    if (ids.size > 1)
-      return {
-        source: `visible`,
-        identityConflict: `页面同时显示多个当前用户 ID（${[...ids].join(`、`)}）`,
-      };
-    const identity = { ...textIdentity, source: `visible` };
-    for (const [field, candidates] of values)
-      if (candidates.size === 1) identity[field] = [...candidates][0];
-    if (values.size) identity.evidence = `structured-fields`;
-    return identity.userId || identity.username || identity.email ? identity : null;
   }
 
   function Vi(e, all = !1) {
@@ -3078,331 +3086,43 @@ export function createCheckinAutoContent(__contentScope) {
     return !1;
   }
 
-  async function qi(e, t, n = {}) {
-    const family = (0, __contentScope.$r)(e).family,
-      configured = (0, __contentScope.Mr)(e),
-      stored = configured?.storageKey
-        ? (0, __contentScope.Ei)(configured.storageKey, configured.storageType)
-        : family === __contentScope.s.SUB2API
-          ? (0, __contentScope.Ei)(`auth_user`)
-          : null,
-      // A saved target ID is an expectation, never evidence of the browser's session.
-      hint = (0, __contentScope.Ci)() ?? stored?.userId,
-      endpoints = e.tokenConfig?.identityEndpoint
-        ? [e.tokenConfig.identityEndpoint]
-        : family === __contentScope.s.SUB2API
-          ? [`/api/v1/auth/me`, `/api/user/self`, `/api/user/info`]
-          : configured?.endpoint || (0, __contentScope.rf)(e)
-            ? __contentScope.vi
-            : (0, __contentScope.wi)(e),
-      deadline = Date.now() + (n.timeoutMs ?? __contentScope.yi),
-      probeKey = JSON.stringify([
-        e.id,
-        location.origin,
-        t ? `explicit-token` : `browser-session`,
-        endpoints.map((endpoint) => {
-          try {
-            const url = new URL(endpoint, location.origin);
-            return `${url.origin}${url.pathname}`;
-          } catch {
-            return null;
-          }
-        }),
-        e.tokenConfig?.headerName,
-        !!configured?.endpoint,
-        !!e.authBootstrap?.endpoint,
-      ]),
-      probes = __contentScope.identityProbeHints,
-      remembered = endpoints.some((endpoint) => {
-        try {
-          const url = new URL(endpoint, location.origin);
-          return !!url.search || !!url.hash;
-        } catch {
-          return !0;
-        }
-      })
-        ? null
-        : probes.get(probeKey),
-      attempted = new Set();
-    let partial = null;
-    async function read(headers, credentials, candidates = endpoints, mode = `cookie`) {
-      for (const endpoint of candidates) {
-        let url;
-        try {
-          url = new URL(endpoint, location.origin).href;
-        } catch {
-          continue;
-        }
-        const attempt = `${mode}|${url}`;
-        if (!(0, __contentScope.W)(e, url) || Date.now() >= deadline || attempted.has(attempt))
-          continue;
-        attempted.add(attempt);
-        const controller = new AbortController(),
-          timer = setTimeout(
-            () => controller.abort(),
-            Math.min(1500, Math.max(1, deadline - Date.now())),
-          );
-        try {
-          const response = await fetch(url, {
-            method: `GET`,
-            credentials,
-            headers: { Accept: `application/json`, ...headers },
-            cache: `no-store`,
-            redirect: `error`,
-            signal: controller.signal,
-          });
-          if (
-            !response.ok ||
-            response.redirected ||
-            !(response.headers.get(`content-type`)?.toLowerCase() ?? ``).includes(`json`) ||
-            (response.url && new URL(response.url).href !== url)
-          )
-            continue;
-          const identity = (0, __contentScope.Si)(await response.json().catch(() => null));
-          if (!identity) continue;
-          const evidence = { ...identity, source: `api`, endpoint: new URL(url).pathname };
-          if (identity.identityConflict) return evidence;
-          if (identity.userId) {
-            // Remember only how this document reached the current-user
-            // endpoint. Its user ID and authentication values are never cached.
-            // URLs carrying authentication query parameters are not retained.
-            if (!new URL(url).search && !new URL(url).hash)
-              probes.set(probeKey, { endpoint, mode });
-            return evidence;
-          }
-          partial ??= evidence;
-        } catch {
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-      return null;
-    }
-    function tokenHeaders(token) {
-      if (!token) return null;
-      const config = e.tokenConfig;
-      return {
-        [config?.headerName || `Authorization`]: `${config?.headerPrefix ?? `Bearer `}${token}`,
-      };
-    }
-    async function readCookie(candidates = endpoints) {
-      for (const endpoint of candidates) {
-        // Try compatibility headers immediately after the same endpoint
-        // rejects bare cookies, rather than exhausting every unrelated route.
-        let identity = await read({}, `include`, [endpoint], `cookie`);
-        if (identity) return identity;
-        if (hint) {
-          identity = await read((0, __contentScope.Vr)(hint), `include`, [endpoint], `hint`);
-          if (identity) return identity;
-        }
-      }
-      return null;
-    }
-    let token =
-      t ??
-      (e.tokenConfig
-        ? (0, __contentScope.Ti)(e.tokenConfig.storageKey, e.tokenConfig.storageType)
-        : null);
-    if (!token && family === __contentScope.s.SUB2API)
-      for (const key of [`auth_token`, `access_token`, `token`]) {
-        const value = (0, __contentScope.Ti)(key);
-        if (value && value.length > 20 && !value.startsWith(`{`)) {
-          token = value;
-          break;
-        }
-      }
-    const authorization = tokenHeaders(token);
-    if (remembered) {
-      let identity = null;
-      if (t && remembered.mode === `token` && authorization)
-        identity = await read(
-          { ...authorization, ...(0, __contentScope.Vr)(hint) },
-          `omit`,
-          [remembered.endpoint],
-          `token`,
-        );
-      else if (!t) {
-        if (remembered.mode === `hint` && hint)
-          identity = await read(
-            (0, __contentScope.Vr)(hint),
-            `include`,
-            [remembered.endpoint],
-            `hint`,
-          );
-        else identity = await readCookie([remembered.endpoint]);
-        if (!identity && remembered.mode === `token` && authorization)
-          identity = await read(
-            { ...authorization, ...(0, __contentScope.Vr)(hint) },
-            `omit`,
-            [remembered.endpoint],
-            `token`,
-          );
-        if (!identity && remembered.mode === `bootstrap` && e.authBootstrap) {
-          const headers = await (0, __contentScope.ui)(e);
-          if (Object.keys(headers).length)
-            identity = await read(
-              { ...headers, ...(0, __contentScope.Vr)(hint) },
-              `omit`,
-              [remembered.endpoint],
-              `bootstrap`,
-            );
-        }
-      }
-      if (identity) return identity;
-      probes.delete(probeKey);
-    }
-    if (!t) {
-      // Cookie authentication first: stale local tokens must not override a new login.
-      const identity = await readCookie();
-      if (identity) return identity;
-    }
-    if (authorization) {
-      const identity = await read(
-        { ...authorization, ...(0, __contentScope.Vr)(hint) },
-        `omit`,
-        endpoints,
-        `token`,
-      );
-      if (identity) return identity;
-    }
-    if (configured?.endpoint && Date.now() < deadline) {
-      const identity = await (0, __contentScope.Oi)(e, configured, t);
-      if (identity?.userId || identity?.identityConflict) return identity;
-      partial ??= identity;
-    }
-    if (!t && e.authBootstrap && Date.now() < deadline) {
-      const headers = await (0, __contentScope.ui)(e);
-      if (Object.keys(headers).length) {
-        const identity = await read(
-          { ...headers, ...(0, __contentScope.Vr)(hint) },
-          `omit`,
-          endpoints,
-          `bootstrap`,
-        );
-        if (identity) return identity;
-      }
-    }
-    if (n.serverOnly === !0 || t) return partial;
-    const visible = (0, __contentScope.Bi)();
-    if (!partial) return visible;
-    if (visible?.identityConflict) return visible;
-    if (visible?.userId) {
-      if (
-        partial.username &&
-        visible.username &&
-        !(0, __contentScope.Ji)(partial.username, visible.username)
-      )
-        return {
-          source: `visible`,
-          identityConflict: `身份接口的账号名与页面用户 ID ${visible.userId} 所属账号不一致`,
-        };
-      return { ...visible, ...(partial.username ? { username: partial.username } : {}) };
-    }
-    return partial;
+  async function qi(site, token, options = {}) {
+    identityResolver ??= new SiteIdentityResolver({
+      getFamily: (selected) => (0, __contentScope.$r)(selected).family,
+      readStorage: (key, type) => (0, __contentScope.Ti)(key, type),
+      readPage: (selected) => (0, __contentScope.Bi)(selected),
+      userIdHeaders: (hint) => (0, __contentScope.Vr)(hint),
+      bootstrapHeaders: (selected) => (0, __contentScope.ui)(selected),
+      readExternal: (selected, source, explicitToken, readOptions) =>
+        (0, __contentScope.Oi)(selected, source, explicitToken, readOptions),
+      transportHints: __contentScope.identityProbeHints,
+    });
+    // Per-read transport options must not leak into the next account's call.
+    // The shared resolver remembers only successful endpoint locations.
+    const deadline = Date.now() + (options.timeoutMs ?? 4000),
+      reader = Object.create(identityResolver);
+    reader.readExternal = (selected, source, explicitToken) =>
+      (0, __contentScope.Oi)(selected, source, explicitToken, {
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        diagnostics: options.diagnostics,
+      });
+    return reader.read(withSiteIdentityRecipe(site), token, options);
   }
 
-  function Ji(e, t) {
-    return !e || !t ? !1 : e.trim().toLowerCase() === t.trim().toLowerCase();
+  function Ji(first, second) {
+    return identitiesEqual(first, second);
   }
 
-  function Yi(e, t) {
-    let n = [e.username, e.email, e.displayName].filter(Boolean),
-      r = n.find((e) => (0, __contentScope.Ji)(e, t));
-    if (r) return r;
-    let i = t.includes(`@`) ? t.split(`@`)[0] : null;
-    return i ? (n.find((e) => !e.includes(`@`) && (0, __contentScope.Ji)(e, i)) ?? null) : null;
+  function Yi(identity, username) {
+    return findIdentityMatch(identity, username)?.value ?? null;
   }
 
-  function Xi(e, t, n = [], r) {
-    let i = (0, __contentScope.Yi)(e, t);
-    if (i) return { value: i, expected: t, source: `primary` };
-    if (r?.username && (0, __contentScope.Ji)(e.username, r.username))
-      return { value: e.username, expected: r.username, source: `stored` };
-    if (r?.email && (0, __contentScope.Ji)(e.email, r.email))
-      return { value: e.email, expected: r.email, source: `stored` };
-    let a = new Set([t.trim().toLowerCase()]),
-      o = n
-        .map((e) => e.trim())
-        .filter((e) => {
-          if (!e) return !1;
-          let t = e.toLowerCase();
-          return !a.has(t) && (a.add(t), !0);
-        });
-    for (let t of o) {
-      let n = t.includes(`@`)
-        ? (0, __contentScope.Ji)(e.email, t)
-          ? e.email
-          : void 0
-        : (0, __contentScope.Ji)(e.username, t)
-          ? e.username
-          : void 0;
-      if (n) return { value: n, expected: t, source: `alias` };
-    }
-    return null;
+  function Xi(identity, username, aliases, expectedIdentity) {
+    return findIdentityMatch(identity, username, aliases, expectedIdentity);
   }
 
-  function Zi(e, t, n, r) {
-    if (e?.identityConflict)
-      return { match: `unknown`, detail: `身份证据冲突：${e.identityConflict}` };
-    let i = r?.pageAccountMatch,
-      a = i && (!e || e.source === `visible`) && (0, __contentScope.Ji)(i, t) ? i : null;
-    if (!e)
-      return n
-        ? {
-            match: `unknown`,
-            detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID`,
-          }
-        : a
-          ? {
-              match: `confirmed`,
-              detail: `页面显示账号 ${a} 一致（读自页面文本）`,
-            }
-          : { match: `unknown`, detail: `读不到当前登录身份` };
-    let o = `读自${(0, __contentScope.xi)(e.source)}`,
-      s = (0, __contentScope.Xi)(e, t, r?.expectedAliases, r?.expectedIdentity),
-      c = e.userId ? r?.knownUsers?.[e.userId] : void 0;
-    if (e.userId && c)
-      return {
-        match: `mismatch`,
-        detail: n
-          ? `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），本次要签到的是 ${n}`
-          : `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），不是本次账号 ${t}`,
-      };
-    if (n) {
-      if (!e.userId)
-        return {
-          match: `unknown`,
-          detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID（${o}）`,
-        };
-      return String(e.userId) === String(n)
-        ? {
-            match: `confirmed`,
-            detail: `用户 ID ${e.userId} 一致（${o}，账号备注不参与身份核验）`,
-          }
-        : {
-            match: `mismatch`,
-            detail: `当前登录的是用户 ID ${e.userId}（${o}），本次要签到的是 ${n}`,
-          };
-    }
-    let l = [e.username, e.email, e.displayName].filter(Boolean);
-    if (l.length === 0) return { match: `unknown`, detail: `站点未返回可比对的用户名（${o}）` };
-    let u = s?.value ?? a;
-    return u
-      ? {
-          match: `confirmed`,
-          detail:
-            s?.source === `stored`
-              ? `账号 ${t} 已保存的站点身份 ${s.expected} 与当前身份一致（${o}）`
-              : s?.source === `alias`
-                ? `账号 ${t} 保存的身份别名 ${s.expected} 与当前身份 ${u} 一致（${o}）`
-                : (0, __contentScope.Ji)(u, t)
-                  ? `账号 ${t} 一致（${o}）`
-                  : `账号 ${t} 与站点用户名 ${u} 一致（${o}）`,
-        }
-      : {
-          match: `mismatch`,
-          detail: `当前登录的是 ${l[0]}（${o}），本次要签到的是 ${t}`,
-        };
+  function Zi(identity, username, userId, options) {
+    return compareAccountIdentity(identity, username, userId, options);
   }
 
   function Qi(e, t) {
@@ -7231,11 +6951,9 @@ export function createCheckinAutoContent(__contentScope) {
             ? { action: `handoff`, reason: `unknown-manual-identity` }
             : e.canSwitchAccount
               ? { action: `switch-account`, reason: `unknown` }
-              : e.siteAccountCount === 1 && !e.expectedUserId
-                ? { action: `proceed`, reason: `single-account` }
-                : t
-                  ? { action: `handoff`, reason: `unknown-multi-account` }
-                  : { action: `switch-account`, reason: `unknown` };
+              : t
+                ? { action: `handoff`, reason: `unknown-multi-account` }
+                : { action: `switch-account`, reason: `unknown` };
   }
 
   function nm(e) {
@@ -7379,21 +7097,77 @@ export function createCheckinAutoContent(__contentScope) {
     );
   }
 
-  function hasVisibleLogoutControl() {
-    return [...document.querySelectorAll(`button, a, [role="button"]`)].some((control) => {
-      if (!(0, __contentScope.O)(control)) return !1;
-      const label = (
-        control.innerText ||
-        control.textContent ||
-        control.getAttribute(`aria-label`) ||
-        ``
+  function hasVisibleLogoutControl(site, siteEvidence) {
+    const visible = (control) => {
+        if (
+          !(0, __contentScope.O)(control) ||
+          control.disabled ||
+          control.hasAttribute?.(`disabled`) ||
+          control.getAttribute?.(`aria-disabled`) === `true` ||
+          (control.hasAttribute?.(`data-disabled`) &&
+            control.getAttribute?.(`data-disabled`) !== `false`)
+        )
+          return !1;
+        for (let parent = control; parent; parent = parent.parentElement)
+          if (
+            parent.hidden ||
+            parent.getAttribute?.(`aria-hidden`) === `true` ||
+            parent.hasAttribute?.(`inert`)
+          )
+            return !1;
+        return !0;
+      },
+      controls = [
+        ...document.querySelectorAll(`button, a, [role="button"]`),
+        ...document.querySelectorAll(
+          `[role="menuitem"], [role="treeitem"], [data-slot="sidebar-menu-item"]`,
+        ),
+      ];
+    for (const control of new Set(controls)) {
+      if (!visible(control)) continue;
+      const referenced = [`aria-labelledby`, `aria-describedby`].flatMap((attribute) =>
+          (control.getAttribute?.(attribute) ?? ``)
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((id) => document.getElementById?.(id)?.textContent),
+        ),
+        labels = [
+          control.innerText,
+          control.textContent,
+          control.getAttribute?.(`aria-label`),
+          control.getAttribute?.(`title`),
+          control.getAttribute?.(`data-tooltip`),
+          control.getAttribute?.(`data-tip`),
+          ...referenced,
+        ];
+      const normalizedLabels = labels
+          .filter((label) => typeof label === `string`)
+          .map((label) => label.replace(/\s+/g, ` `).trim()),
+        menu = control.closest?.(`[role="menu"], [role="tree"], [role="treegrid"]`),
+        accountMenu =
+          menu &&
+          [...menu.querySelectorAll(`a[href], [role="menuitem"], [role="treeitem"]`)].some((item) =>
+            /个人(?:资料|设置|中心)|(?:账号|账户)(?:资料|设置)|(?:my\s+)?profile|account\s+(?:settings|profile)|personal\s+(?:settings|information)/i.test(
+              (0, __contentScope.Rn)(item),
+            ),
+          );
+      if (
+        normalizedLabels.some((label) =>
+          /^(?:退出\s*(?:当前\s*)?(?:登录|账号|账户)|注销\s*登录|登出|log[\s-]?out|sign[\s-]?out)[.!。！]?$/i.test(
+            label,
+          ),
+        ) ||
+        (accountMenu &&
+          normalizedLabels.some((label) => /^(?:退出|注销|exit)[.!。！]?$/i.test(label)))
       )
-        .replace(/\s+/g, ` `)
-        .trim();
-      return /^(?:退出\s*(?:登录|账号|账户)|注销\s*登录|登出|log[\s-]?out|sign[\s-]?out)$/i.test(
-        label,
-      );
-    });
+        return !0;
+    }
+    return (
+      (
+        siteEvidence ??
+        readSiteLoginEvidence(site ?? { loginUrl: location.origin }, document, location, visible)
+      ).logoutControl === !0
+    );
   }
 
   function detectPageLogin(site, account = {}, enumerate = !1) {
@@ -7426,6 +7200,7 @@ export function createCheckinAutoContent(__contentScope) {
       ].find(
         (control) =>
           (0, __contentScope.O)(control) &&
+          !isLoginHelpControl(control) &&
           !registrationStep(control) &&
           /密码登录|账号密码|账密登录|(?:sign|log)\s*in\s*(?:with|using)?\s*(?:email|password)|(?:use|continue\s*with)\s*password|^password(?:\s*login)?$/i.test(
             control.innerText ||
@@ -7531,11 +7306,8 @@ export function createCheckinAutoContent(__contentScope) {
           entries: options.map(({ evidence, ...entry }) => entry),
           evidence: options.map((option) => option.evidence),
         };
-      const indicator = site.successIndicator ? (0, __contentScope.D)(site.successIndicator) : null;
-      if (
-        (indicator && (0, __contentScope.O)(indicator)) ||
-        (0, __contentScope.hasVisibleLogoutControl)()
-      )
+      const loginState = classifyLoginState((0, __contentScope.readLoginSnapshot)(site));
+      if (loginState.status === `authenticated`)
         return {
           ...result,
           status: `already-logged-in`,
@@ -7544,8 +7316,8 @@ export function createCheckinAutoContent(__contentScope) {
       return {
         ...result,
         evidence: [
-          (0, __contentScope.nr)()
-            ? `当前页面正在等待二次验证，暂时不能确认可用登录方式`
+          loginState.status === `blocked` || loginState.status === `failed`
+            ? loginState.detail
             : `当前页面尚未展示可识别的登录入口；可重新检测或手动选择账号类型`,
         ],
       };
@@ -7569,17 +7341,15 @@ export function createCheckinAutoContent(__contentScope) {
       i = r === `oauth` || r === `github` || r === `passkey`,
       a = r === `github` ? e.githubUsername?.trim() : void 0,
       o = r === `github` && !!e.githubUsername && !!e.githubPassword && !!t.startGithubLogout,
-      s = { knownUsers: e.siteAccountUserIds ?? {} },
-      c =
-        e.siteAccountCount === 1 && !(0, __contentScope.p)(e.site)
-          ? e.site.adapter?.userId
-          : void 0,
-      l = e.accountIdentityUserId ?? c,
+      s = {
+        knownUsers: e.siteAccountUserIds ?? {},
+        knownIdentities: e.siteAccountIdentities ?? [],
+      },
+      l = e.accountIdentityUserId,
       u = l ? s.knownUsers[l] : void 0,
       d = u ? void 0 : l,
       f = d,
       formLoginSubmitted = e.formCredentialsSubmitted === !0,
-      loginPageDetected = !1,
       manualWaitingStage = [`verify-manual`, `relogin-verify-manual`].includes(e.stage)
         ? e.stage
         : null,
@@ -7650,6 +7420,10 @@ export function createCheckinAutoContent(__contentScope) {
       x = new Set([`未发现公告弹窗`]),
       S = {
         push: (e) => {
+          if (e.startsWith(`身份接口 `)) {
+            if (x.has(e)) return;
+            x.add(e);
+          }
           (x.has(e) && n[n.length - 1] === e) ||
             (n.push(e), console.log(`[签到助手]`, e), t.reportProgress?.([...n]));
         },
@@ -7671,7 +7445,6 @@ export function createCheckinAutoContent(__contentScope) {
           i = r === `oauth` || r === `github` || r === `passkey`;
           a = r === `github` ? e.githubUsername?.trim() : void 0;
           o = r === `github` && !!e.githubUsername && !!e.githubPassword && !!t.startGithubLogout;
-          loginPageDetected = !0;
           formLoginSubmitted = !1;
           S.push(`根据当前页面识别登录方式：${method}（${choice.evidence}）`);
           if (method === `form` && choice.entry) {
@@ -7761,13 +7534,29 @@ export function createCheckinAutoContent(__contentScope) {
             }
         },
       };
-    async function ie(identity) {
+    async function ie(identity, stable = !1) {
       const persist =
         (identity.source === `api` &&
-          (r !== `manual` || !!g() || matchesManualAccount(identity)) &&
-          !(r === `form` && !formLoginSubmitted && !e.accountIdentityUserId)) ||
-        (r === `form` && formLoginSubmitted && identity.verifiedByManagedLogin === !0);
-      if (persist) await t.saveIdentity?.(identity);
+          (r !== `manual` || hasBoundIdentity() || matchesManualAccount(identity)) &&
+          !(r === `form` && !formLoginSubmitted && !hasBoundIdentity())) ||
+        (identity.verifiedByManagedLogin === !0 &&
+          ((r === `form` && formLoginSubmitted) ||
+            (r === `github` && e.githubCredentialsSubmitted === !0)));
+      if (!persist) return !1;
+      if (!hasBoundIdentity() && !stable) {
+        await (0, __contentScope.w)(350);
+        const next = await se(`首次身份绑定复核`);
+        if (
+          !stableIdentitySamples(identity, next.identity) ||
+          ue(next) ||
+          (identity.verifiedByManagedLogin !== !0 && ce(next).match !== `confirmed`)
+        )
+          throw Error(`首次绑定的身份尚未形成与本账号一致的稳定样本，已保留原账号数据`);
+        identity = { ...identity, ...next.identity };
+      }
+      if (!hasBoundIdentity() && !t.saveIdentity)
+        throw Error(`无法保存本账号首次确认的身份，请重新加载扩展后重试`);
+      await t.saveIdentity?.(identity);
       if (identity.userId) f = identity.userId;
       if (identity.username) m = identity.username;
       if (identity.email) h = identity.email;
@@ -7781,20 +7570,14 @@ export function createCheckinAutoContent(__contentScope) {
           ? { identity: tokenIdentity }
           : await se(`第二次登录后的页面`),
         verdict = ce(observation);
+      if (!tokenIdentity && (await enterIdentityPage(observation, verdict, `relogin-verify`)))
+        return null;
       if (!tokenIdentity) {
         const first = observation.identity;
         await (0, __contentScope.w)(350);
         observation = await se(`第二次登录后的页面`);
         verdict = ce(observation);
-        if (
-          !first ||
-          first.identityConflict ||
-          first.source !== observation.identity?.source ||
-          first.userId !== observation.identity?.userId ||
-          (!first.userId &&
-            (first.username !== observation.identity?.username ||
-              first.email !== observation.identity?.email))
-        )
+        if (!stableIdentitySamples(first, observation.identity))
           verdict = {
             match: `unknown`,
             detail: observation.identity?.identityConflict
@@ -7836,7 +7619,7 @@ export function createCheckinAutoContent(__contentScope) {
     }
     function oe(t) {
       let n = (0, __contentScope.Gi)(e.username);
-      return n
+      return n && !n.masked
         ? (S.push(
             `${t}读不到身份接口，但页面上印着本账号 ${n.matched}${n.masked ? `（打码显示）` : ``}，按用户名核对`,
           ),
@@ -7844,7 +7627,7 @@ export function createCheckinAutoContent(__contentScope) {
         : null;
     }
     async function se(t) {
-      let n = await (0, __contentScope.qi)(v()),
+      let n = await (0, __contentScope.qi)(v(), void 0, { diagnostics: S }),
         r = (0, __contentScope.Gi)(e.username);
       return n
         ? r && n.source === `visible`
@@ -7862,14 +7645,86 @@ export function createCheckinAutoContent(__contentScope) {
         ...(n ? { expectedIdentity: n } : {}),
       });
     }
+    function hasBoundIdentity() {
+      return !!g() || !!m || !!h;
+    }
+    function canProbeLoginIdentityPage() {
+      // Leaving the login route permits a read-only identity probe, but is
+      // still insufficient to declare OAuth successful.
+      return ![`oauth`, `github`, `passkey`].includes(r) || (0, __contentScope.rr)(e.site);
+    }
+    async function enterIdentityPage(
+      observation,
+      verdict,
+      stage = `checkin`,
+      navigationOptions = {},
+    ) {
+      const loginVerification = navigationOptions.loginVerification === !0,
+        workflow = (0, __contentScope.rf)(y());
+      if (
+        r === `token` ||
+        r === `manual` ||
+        (workflow && !loginVerification) ||
+        observation.identity?.identityConflict ||
+        observation.identity?.userId ||
+        verdict.match !== `unknown`
+      )
+        return !1;
+      const identityPath = loginVerification && workflow ? (0, __contentScope.sf)(y()) : null,
+        identitySite = identityPath
+          ? {
+              ...y(),
+              identitySource: { ...readIdentitySource(y()), pagePath: identityPath },
+            }
+          : y(),
+        url = resolveIdentityPage(identitySite, document, location);
+      if (!url) return !1;
+      const target = new URL(url);
+      const path = `${target.pathname}${target.hash}`;
+      if (path === `${location.pathname}${location.hash}`) return !1;
+      const phase = stage.startsWith(`relogin`) ? `第二次登录` : `本轮登录`;
+      const message = `身份读取进入资料页: ${path}（${phase}）`;
+      let loginStart = 0;
+      for (let index = 0; index < n.length; index++)
+        if (
+          n[index].startsWith(__contentScope.Wm) ||
+          n[index].startsWith(`开始第二次登录以完成签到`)
+        )
+          loginStart = index;
+      if (n.slice(loginStart).includes(message)) {
+        S.push(
+          `身份核验页未能到达：已尝试 ${path}，站点仍返回 ${location.pathname}${location.hash}；停止重复跳转`,
+        );
+        return !1;
+      }
+      S.push(
+        `当前页身份字段不足：${verdict.detail}；使用本站资料页读取当前账号，目标用户 ID ${g() ?? `尚未绑定`}`,
+      );
+      S.push(message);
+      await t.navigate(url, n, stage);
+      return !0;
+    }
     function le(e, t) {
-      if (e.identity?.source !== `api`) return !1;
+      if (![`api`, `visible`].includes(e.identity?.source)) return !1;
       let n = e.identity.userId;
-      return n && g() ? n !== g() : n && s.knownUsers[n] ? !0 : t.match === `mismatch` && !i;
+      return n && g()
+        ? n !== g()
+        : n && s.knownUsers[n]
+          ? !0
+          : t.match === `mismatch` &&
+            (!i ||
+              (!g() &&
+                hasBoundIdentity() &&
+                (e.identity.source === `api` ||
+                  [`structured-fields`, `profile-card`].includes(e.identity.evidence))));
     }
     function ue(e) {
       let t = e.identity?.userId;
-      return t ? (e.identity?.source === `api` && g() && t !== g() ? !0 : !!s.knownUsers[t]) : !1;
+      return t
+        ? [`api`, `visible`].includes(e.identity?.source) && g() && t !== g()
+          ? !0
+          : !!s.knownUsers[t]
+        : !1;
     }
     function matchesManualAccount(identity) {
       const target = String(e.username ?? ``)
@@ -7889,8 +7744,8 @@ export function createCheckinAutoContent(__contentScope) {
         return { confirmed: !1, conflict: !0, detail: verdict.detail };
       if (
         first.identity?.source !== `api` ||
-        !first.identity.userId ||
-        (g() ? verdict.match !== `confirmed` : !matchesManualAccount(first.identity))
+        (!first.identity.userId && !first.identity.username && !first.identity.email) ||
+        (hasBoundIdentity() ? verdict.match !== `confirmed` : !matchesManualAccount(first.identity))
       )
         return { confirmed: !1, detail: `尚未读到与账号 ${e.username} 一致的实时身份` };
       await (0, __contentScope.w)(350);
@@ -7900,14 +7755,18 @@ export function createCheckinAutoContent(__contentScope) {
         return { confirmed: !1, conflict: !0, detail: nextVerdict.detail };
       if (
         next.identity?.source !== `api` ||
-        next.identity.userId !== first.identity.userId ||
-        (g() ? nextVerdict.match !== `confirmed` : !matchesManualAccount(next.identity))
+        !stableIdentitySamples(first.identity, next.identity) ||
+        (hasBoundIdentity()
+          ? nextVerdict.match !== `confirmed`
+          : !matchesManualAccount(next.identity))
       )
         return { confirmed: !1, detail: `页面登录身份尚未形成连续稳定样本` };
       if (!t.saveIdentity) throw Error(`当前运行环境无法保存页面登录身份，请重新加载扩展`);
-      await ie(next.identity);
+      await ie(next.identity, !0);
       await t.confirmIdentity?.();
-      S.push(`已连续核对页面登录身份，本站用户 ID ${g()} 与账号 ${e.username} 一致`);
+      S.push(
+        `已连续核对页面登录身份，本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`} 与账号 ${e.username} 一致`,
+      );
       return { confirmed: !0 };
     }
     async function waitManualLogin(stage, announce = !0) {
@@ -8007,7 +7866,15 @@ export function createCheckinAutoContent(__contentScope) {
     }
     function pe(t) {
       return (
-        r === `github` && o && e.githubCredentialsSubmitted === !0 && !!t.identity?.userId && !ue(t)
+        r === `github` &&
+        o &&
+        e.githubCredentialsSubmitted === !0 &&
+        (t.identity?.userId ||
+          ((t.identity?.username || t.identity?.email) &&
+            (t.identity.source === `api` ||
+              [`structured-fields`, `profile-card`].includes(t.identity.evidence)))) &&
+        !ue(t) &&
+        (!hasBoundIdentity() || ce(t).match === `confirmed`)
       );
     }
     function canEstablishFormIdentity(observation) {
@@ -8015,8 +7882,12 @@ export function createCheckinAutoContent(__contentScope) {
       return (
         r === `form` &&
         formLoginSubmitted &&
-        !g() &&
-        !!identity?.userId &&
+        !hasBoundIdentity() &&
+        !identity?.identityConflict &&
+        (identity?.userId ||
+          ((identity?.source === `api` ||
+            [`structured-fields`, `profile-card`].includes(identity?.evidence)) &&
+            matchesManualAccount(identity))) &&
         (identity.source === `api` || identity.source === `visible`) &&
         !ue(observation)
       );
@@ -8033,20 +7904,26 @@ export function createCheckinAutoContent(__contentScope) {
     }
     async function me(t, n) {
       if (pe(t)) {
+        if (!hasBoundIdentity()) {
+          const first = t.identity;
+          await (0, __contentScope.w)(350);
+          const next = await se(`${n}首次身份复核`);
+          if (!pe(next) || !stableIdentitySamples(first, next.identity)) return `unresolved`;
+          t = next;
+        }
         let r = t.identity;
         return (
-          await ie({ ...r, verifiedByManagedLogin: !0 }),
+          await ie({ ...r, verifiedByManagedLogin: !0 }, !0),
           S.push(
-            `本轮已用账号 ${e.username} 保存的 GitHub 凭据登录，${n}显示的 ${r.username ?? r.displayName ?? r.email ?? `第三方身份`}（用户 ID ${r.userId}）就是本账号；` +
-              (r.source === `api`
-                ? `已记住该用户 ID，以后直接按 ID 核对`
-                : `本轮按该身份继续核对，不保存为长期账号映射`),
+            `本轮已用账号 ${e.username} 保存的 GitHub 凭据登录，${n}显示的 ${r.username ?? r.email ?? r.userId} 已连续核对；` +
+              `已保存本站${r.userId ? `用户 ID ${r.userId}` : `登录标识 ${r.username ?? r.email}`}，以后直接核对本账号绑定`,
           ),
           `confirmed`
         );
       }
       return r === `github` &&
         o &&
+        e.githubCredentialsSubmitted !== !0 &&
         (S.push(
           `${n}只显示第三方身份，且本轮沿用的是浏览器里已有的 GitHub 会话，改为用本账号保存的 GitHub 凭据重新登录`,
         ),
@@ -8114,7 +7991,45 @@ export function createCheckinAutoContent(__contentScope) {
     function E(e, t = 12e4) {
       return be(e, t, !1);
     }
-    let checkinResultBeforeClick;
+    const loginVerificationNavigation = {};
+    let checkinResultBeforeClick, lastLoginState;
+    async function readCurrentLoginState(timeoutMs = 6e3) {
+      const state = await (0, __contentScope.readLoginState)(v(), {
+        timeoutMs,
+        stopOnLoginForm: !0,
+        diagnostics: S,
+      });
+      lastLoginState = state;
+      S.push(loginStateLog(state));
+      return state;
+    }
+    function canStartLogin(state) {
+      return (
+        state.status === `pending` &&
+        [`login_form_visible`, `login_entry_visible`].includes(state.reason)
+      );
+    }
+    function shouldProbeLoginIdentity(state) {
+      return (
+        state.status === `pending` &&
+        ![`login_form_visible`, `login_entry_visible`, `oauth_pending`].includes(state.reason)
+      );
+    }
+    async function stopForUnconfirmedLogin(state) {
+      if (state.identity?.identityConflict) {
+        const observation = { identity: state.identity };
+        await je(observation, ce(observation));
+        return null;
+      }
+      if (state.status === `failed`) return C(`登录状态核验未通过：${state.detail}`);
+      await t.needsUser(
+        state.status === `blocked`
+          ? `登录步骤尚未完成：${state.detail}。请在本站完成这一项后重新执行。`
+          : `当前登录状态尚未确认：${state.detail}。没有看到可操作的登录表单或登录入口，已保留当前会话；请查看账号详情里的身份读取来源，或在本站资料页补充可核对的身份字段后重试。`,
+        n,
+      );
+      return null;
+    }
     async function D(e) {
       if (e === `checkin`) {
         const result = (0, __contentScope.Uu)();
@@ -8123,11 +8038,9 @@ export function createCheckinAutoContent(__contentScope) {
       return be(e, __contentScope.$);
     }
     function loginResultReady() {
-      const site = v();
-      if ((0, __contentScope.On)(site) || (0, __contentScope.nr)()) return !1;
-      const indicator = site.successIndicator ? (0, __contentScope.D)(site.successIndicator) : null;
-      if (indicator && (0, __contentScope.O)(indicator)) return !0;
-      return (0, __contentScope.hasVisibleLogoutControl)();
+      return (
+        classifyLoginState((0, __contentScope.readLoginSnapshot)(v())).status === `authenticated`
+      );
     }
     function xe(e) {
       return be(e, __contentScope.$, !0, 2500, loginResultReady);
@@ -8159,18 +8072,42 @@ export function createCheckinAutoContent(__contentScope) {
           ),
           i);
     }
-    async function we(r, i) {
-      let a = await ye(r);
-      if ((i?.(a), !a.resolved)) return !1;
-      let o = async () =>
-        location.origin === (0, __contentScope.Dr)(e.site) &&
-        (r === `verify` || r === `verify-oauth` || r === `relogin-verify`) &&
-        (await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 }),
-        (!(0, __contentScope.rf)(y()) || (0, __contentScope.cf)(y())) &&
-          (await (0, __contentScope.qi)(v()))?.source === `api`)
-          ? (S.push(`站点身份接口确认登录成功`), !0)
-          : (0, __contentScope.xr)(e.site, S);
+    async function we(stage, onChallenge) {
+      let a = await ye(stage);
+      if ((onChallenge?.(a), !a.resolved)) {
+        lastLoginState = {
+          status: `blocked`,
+          reason: `challenge_pending`,
+          detail: `${a.kind ?? `安全验证`}尚未完成，暂不确认登录成功`,
+        };
+        S.push(loginStateLog(lastLoginState));
+        return !1;
+      }
+      const o = async () => {
+        await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 });
+        return (0, __contentScope.xr)(v(), S, {
+          onResult: (state) => {
+            lastLoginState = state;
+          },
+        });
+      };
       if (await o()) return !0;
+      // Some learned sites expose their only current-account evidence on a
+      // separate profile page. Visit that read-only page and resume verification
+      // there; the navigation itself is never accepted as login success.
+      if (
+        lastLoginState &&
+        shouldProbeLoginIdentity(lastLoginState) &&
+        canProbeLoginIdentityPage() &&
+        shouldProbeLoginIdentity(classifyLoginState((0, __contentScope.readLoginSnapshot)(v()))) &&
+        (await enterIdentityPage(
+          { identity: lastLoginState.identity ?? null },
+          { match: `unknown`, detail: lastLoginState.detail },
+          stage,
+          { loginVerification: !0 },
+        ))
+      )
+        throw loginVerificationNavigation;
       let s = (0, __contentScope.nr)();
       if (!s) return !1;
       (S.push(`检测到${s}，等待你在当前标签页完成`),
@@ -8179,7 +8116,12 @@ export function createCheckinAutoContent(__contentScope) {
       for (; Date.now() < c && (0, __contentScope.nr)();) await (0, __contentScope.w)(500);
       return (0, __contentScope.nr)()
         ? (S.push(`${s}等待超时`), !1)
-        : (S.push(`${s}已完成，继续验证登录结果`), await t.markStage(r, n), o());
+        : (S.push(`${s}已完成，继续验证登录结果`), await t.markStage(stage, n), o());
+    }
+    function loginFailureMessage(fallback) {
+      return lastLoginState && lastLoginState.status !== `authenticated`
+        ? `${fallback}：${lastLoginState.detail}`
+        : fallback;
     }
     async function O() {
       if ((0, __contentScope.rf)(y()))
@@ -8188,6 +8130,27 @@ export function createCheckinAutoContent(__contentScope) {
         a = ce(i);
       if (i.identity?.identityConflict) {
         await je(i, a);
+        return !1;
+      }
+      if (
+        await enterIdentityPage(
+          i,
+          a,
+          e.stage.startsWith(`relogin`) ? `relogin-verify` : `verify-oauth`,
+        )
+      )
+        return !1;
+      if (r === `github` && !hasBoundIdentity()) {
+        const binding = await me(i, `OAuth 返回页`);
+        if (binding === `confirmed`) {
+          await t.confirmIdentity?.();
+          return !0;
+        }
+        if (binding !== `switching`)
+          await t.needsUser(
+            `GitHub 首次登录身份尚未稳定（${a.detail}），请核对本站资料页和本账号凭据`,
+            n,
+          );
         return !1;
       }
       if (
@@ -8319,14 +8282,29 @@ export function createCheckinAutoContent(__contentScope) {
         if (r.status === `expired`) return C(`${r.reason}；请重新登录该站点后再点「抓取登录态」`);
         r.status === `refreshed` && ((i = r.tokens.accessToken), await t.saveSession?.(r.tokens));
       }
-      let a = await (0, __contentScope.qi)(v(), i);
+      let a = await (0, __contentScope.qi)(v(), i, { diagnostics: S });
       if (!a)
         return C(
           n
             ? `登录凭据已失效，请重新登录该站点后点「抓取登录态」`
             : `Token 无效或已过期，请重新从站点获取`,
         );
-      let o = (0, __contentScope.Zi)(a, e.username, g(), s);
+      if (
+        !hasBoundIdentity() &&
+        a.source === `api` &&
+        identitySampleKey(a) &&
+        !ue({ identity: a })
+      ) {
+        await (0, __contentScope.w)(350);
+        const next = await (0, __contentScope.qi)(v(), i, { diagnostics: S });
+        if (!stableIdentitySamples(a, next) || ue({ identity: next }))
+          return C(`本账号 Token 返回的身份尚未形成稳定样本，已停止首次绑定和签到`);
+        if (!t.saveIdentity) return C(`无法保存本账号首次确认的 Token 身份，请重新加载扩展后重试`);
+        a = { ...next, verifiedByManagedLogin: !0 };
+        await ie(a, !0);
+        S.push(`已使用本账号 Token 确认本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`}`);
+      }
+      let o = ce({ identity: a });
       return o.match !== `confirmed`
         ? C(
             o.match === `mismatch`
@@ -8432,6 +8410,7 @@ export function createCheckinAutoContent(__contentScope) {
           `来源 ${n?.source ?? `none`}`,
           ...(n?.endpoint ? [`实时接口 ${n.endpoint}`] : []),
           ...(n?.evidence === `structured-fields` ? [`页面证据 来自明确的资料字段`] : []),
+          ...(n?.evidence === `profile-card` ? [`页面证据 来自个人设置中的当前用户卡片`] : []),
           ...(n?.identityConflict ? [`身份证据冲突 ${n.identityConflict}`] : []),
           `目标 userId ${g() ?? `尚未绑定`}`,
           `userId ${n?.userId ?? `未读取`}`,
@@ -8458,10 +8437,10 @@ export function createCheckinAutoContent(__contentScope) {
       let e = await se(`个人资料页`),
         t = de(e, ce(e));
       if (canEstablishFormIdentity(e)) {
-        const firstId = e.identity.userId;
+        const firstIdentity = e.identity;
         await (0, __contentScope.w)(650);
         const next = await se(`个人资料页`);
-        if (canEstablishFormIdentity(next) && next.identity.userId === firstId) {
+        if (canEstablishFormIdentity(next) && stableIdentitySamples(firstIdentity, next.identity)) {
           return {
             evidence: { ...next, managedLoginStable: !0 },
             verdict: de(next, ce(next)),
@@ -8471,11 +8450,14 @@ export function createCheckinAutoContent(__contentScope) {
           evidence: next,
           verdict: {
             match: `unknown`,
-            detail: `本账号首次登录后的用户 ID 尚未形成一致的稳定样本`,
+            detail: `本账号首次登录后的身份尚未形成一致的稳定样本`,
           },
         };
       }
-      if (!(y().checkin?.entry || (0, __contentScope.cf)(y())) && !e.identity?.identityConflict)
+      if (
+        !(y().checkin?.entry || (0, __contentScope.cf)(y()) || y().identitySource?.pagePath) &&
+        !e.identity?.identityConflict
+      )
         return { evidence: e, verdict: t };
       S.push(
         e.identity?.source === `api`
@@ -8484,7 +8466,7 @@ export function createCheckinAutoContent(__contentScope) {
       );
       let n = Date.now() + __contentScope.nh,
         r = JSON.stringify({
-          identity: e.identity,
+          identity: identitySampleKey(e.identity),
           pageAccountMatch: e.pageAccountMatch,
           match: t.match,
         }),
@@ -8496,7 +8478,7 @@ export function createCheckinAutoContent(__contentScope) {
         e = await se(`个人资料页`);
         t = de(e, ce(e));
         let n = JSON.stringify({
-          identity: e.identity,
+          identity: identitySampleKey(e.identity),
           pageAccountMatch: e.pageAccountMatch,
           match: t.match,
         });
@@ -8528,7 +8510,7 @@ export function createCheckinAutoContent(__contentScope) {
       }
       if (
         r === `manual` &&
-        (s.match !== `confirmed` || (!g() && !matchesManualAccount(a.identity)))
+        (s.match !== `confirmed` || (!hasBoundIdentity() && !matchesManualAccount(a.identity)))
       ) {
         Oe(a, s);
         await t.needsUser(
@@ -8537,7 +8519,7 @@ export function createCheckinAutoContent(__contentScope) {
         );
         return { proceed: !1, result: null };
       }
-      if (r === `auto` && !g()) {
+      if (r === `auto` && !hasBoundIdentity()) {
         S.push(`首次使用本站流程，先识别登录页并使用本账号凭据建立身份`);
         const switched = await k();
         return {
@@ -8549,7 +8531,7 @@ export function createCheckinAutoContent(__contentScope) {
         };
       }
       let c = !!y().checkin?.entry || (0, __contentScope.cf)(y());
-      if (c && r === `form` && !g()) {
+      if (r === `form` && !hasBoundIdentity()) {
         if (canEstablishFormIdentity(a) && a.managedLoginStable === !0) {
           if (!t.saveIdentity) {
             return {
@@ -8558,7 +8540,7 @@ export function createCheckinAutoContent(__contentScope) {
             };
           }
           try {
-            await ie({ ...a.identity, verifiedByManagedLogin: !0 });
+            await ie({ ...a.identity, verifiedByManagedLogin: !0 }, !0);
           } catch (error) {
             return {
               proceed: !1,
@@ -8567,7 +8549,9 @@ export function createCheckinAutoContent(__contentScope) {
               ),
             };
           }
-          S.push(`已使用本账号凭据登录并确认本站用户 ID ${g()}，继续使用本站统一签到流程`);
+          S.push(
+            `已使用本账号凭据登录并确认本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`}，继续使用本站统一签到流程`,
+          );
           (0, __contentScope.cf)(y()) && S.push(__contentScope.rh);
           await t.confirmIdentity?.();
           return { proceed: !0 };
@@ -8590,6 +8574,21 @@ export function createCheckinAutoContent(__contentScope) {
         Oe(a, s);
         await t.needsUser(
           `本站统一签到流程已保存，但本次登录后尚未确认本账号的稳定身份（${s.detail}）。已停止签到，请确认账号凭据及身份页加载完成后重试。`,
+          n,
+        );
+        return { proceed: !1, result: null };
+      }
+      if (r === `github` && !hasBoundIdentity()) {
+        const binding = await me(a, `个人资料页`);
+        if (binding === `confirmed`) {
+          (0, __contentScope.cf)(y()) && S.push(__contentScope.rh);
+          await t.confirmIdentity?.();
+          return { proceed: !0 };
+        }
+        if (binding === `switching`) return { proceed: !1, result: null };
+        Oe(a, s);
+        await t.needsUser(
+          `GitHub 首次登录身份尚未稳定（${s.detail}），已停止签到并保留原账号数据`,
           n,
         );
         return { proceed: !1, result: null };
@@ -8739,6 +8738,16 @@ export function createCheckinAutoContent(__contentScope) {
               };
       }
       if ((a || o) && s?.source !== `api`) {
+        const loginState = await readCurrentLoginState();
+        if (loginState.status === `authenticated`) return null;
+        if (!canStartLogin(loginState)) {
+          await stopForUnconfirmedLogin(loginState);
+          return {
+            status: `interrupted`,
+            message: `学习流程中的登录状态尚未确认：${loginState.detail}`,
+            terminal: !0,
+          };
+        }
         let r = `学习流程中登录状态已失效，需要重新登录`,
           i = n.filter((e) => e.startsWith(__contentScope.qm)).length;
         return i >= __contentScope.Jm
@@ -8781,6 +8790,11 @@ export function createCheckinAutoContent(__contentScope) {
       let u = (0, __contentScope.of)(i, _),
         d = (0, __contentScope.cf)(i),
         f = (0, __contentScope.lh)(n);
+      if (!c && !e.identityConfirmed) {
+        const observation = await se(`签到前的页面`),
+          verdict = ce(observation);
+        if (await enterIdentityPage(observation, verdict, `checkin`)) return null;
+      }
       if (l && !f && !d && (g() || formLoginSubmitted || e.githubCredentialsSubmitted)) {
         const first = await (0, __contentScope.qi)(v(), void 0, { serverOnly: !0 });
         if (first?.source === `api` && first.userId && !first.identityConflict) {
@@ -8870,16 +8884,6 @@ export function createCheckinAutoContent(__contentScope) {
       }
       let s = await (0, __contentScope.Lu)(S, waitingLoginChallenge);
       if (!s.resolved) return C(`${s.kind ?? `Cloudflare 安全验证`}超时，请完成后重新签到`);
-      if (r === `auto` && [`login`, `relogin`, `verify`].includes(e.stage))
-        await resolvePageMethod();
-      if (e.loginEntry && r !== `auto` && r !== `token` && [`login`, `relogin`].includes(e.stage)) {
-        const choice = r === `form` ? (0, __contentScope.detectPageLogin)(e.site, e) : null;
-        loginPageDetected = !!(
-          choice?.method === r || (0, __contentScope.findSelectedLoginControl)(e.loginEntry, r)
-        );
-      }
-      if (r === `auto` && e.stage === `relogin` && !(await resolvePageMethod(1500)))
-        return C(`当前页面尚未显示可识别的登录入口，请等待登录页加载完成后重试`);
       switch ((s.detected && (await t.markStage(e.stage, n)), e.stage)) {
         case `verify-manual`:
         case `relogin-verify-manual`: {
@@ -8899,15 +8903,18 @@ export function createCheckinAutoContent(__contentScope) {
             (await (0, __contentScope.w)(800), location.origin !== (0, __contentScope.Dr)(e.site))
           )
             return C(`登录跳转到了非本站页面，已停止自动操作`);
-          if (!(await we(`verify`))) return C(`未找到明确的登录成功证据(${location.pathname})`);
+          if (!(await we(`verify`)))
+            return C(loginFailureMessage(`未找到明确的登录成功证据(${location.pathname})`));
           if ((S.push(`登录结果已确认(${location.pathname})`), !(0, __contentScope.rf)(y()))) {
-            let r = await (0, __contentScope.qi)(v()),
-              i = { identity: r },
+            let i = await se(`登录后的页面`),
+              r = i.identity,
               a = de(i, ce(i));
             if (r?.identityConflict) {
               await je(i, a);
               return null;
             }
+            if (await enterIdentityPage(i, a, `verify`)) return null;
+            if (r === `form` && !hasBoundIdentity()) return M(!0);
             if (a.match === `mismatch`)
               return (
                 S.push(`登录后的账号身份不匹配：${a.detail}`),
@@ -8935,35 +8942,35 @@ export function createCheckinAutoContent(__contentScope) {
               ? (await we(`verify-oauth`))
                 ? (S.push(`OAuth 授权完成，已跳回本站(${location.pathname})`),
                   (await O()) ? M(!0) : null)
-                : C(`OAuth 授权后缺少明确的登录成功证据`)
+                : C(loginFailureMessage(`OAuth 授权后缺少明确的登录成功证据`))
               : C(`OAuth 尚未返回本站，请在授权页完成操作`)
           );
         case `relogin`:
-          if (
-            (S.push(`开始第二次登录以完成签到`),
-            await (0, __contentScope.U)(e.site, S),
-            r !== `token` && !(0, __contentScope.An)(e.site))
-          ) {
-            let r = await (0, __contentScope.qi)(v(), void 0, {
-              serverOnly: !0,
-            });
-            if (r?.source === `api` && !(0, __contentScope.ir)(e.site))
-              S.push(`站点接口仍返回登录身份，但页面上已没有站内证据，照常进行第二次登录`);
-            else if (r?.source === `api`)
+          S.push(`开始第二次登录以完成签到`);
+          await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 });
+          if (r !== `token`) {
+            const loginState = await readCurrentLoginState();
+            if (loginState.status === `authenticated`)
               return (
-                S.push(`站点退出后会话仍然有效（身份接口还能读到当前账号），退出没有生效`),
+                S.push(`站点退出后会话仍然有效（${loginState.detail}），退出没有生效`),
                 await t.needsUser(
-                  `本站的退出操作没有真正结束会话（退出接口返回成功，但站点仍保持登录），无法完成「退出再登录」。请在站点设置里补充退出按钮选择器（或退出前要先点开的头像菜单），或改用「登录即签到」。`,
+                  `本站的退出操作没有真正结束会话（${loginState.detail}），无法完成「退出再登录」。请核对本站退出流程后重新执行。`,
                   n,
                 ),
                 null
               );
-            else
-              (S.push(
-                `站点身份接口没有返回当前登录身份（未登录，或接口需要扩展拿不到的认证信息），按已退出处理`,
-              ),
-                (0, __contentScope.di)());
+            if (!canStartLogin(loginState)) {
+              await t.needsUser(
+                `退出后的登录状态尚未确认：${loginState.detail}。没有看到登录表单或登录入口，已停止第二次登录；请核对本站退出流程及当前页面。`,
+                n,
+              );
+              return null;
+            }
+            S.push(`退出后已显示登录入口，开始本账号的第二次登录`);
+            (0, __contentScope.di)();
           }
+          if (r === `auto` && !(await resolvePageMethod(1500)))
+            return C(`当前登录页尚未显示可识别的登录方式，请等待页面加载完成后重试`);
           if (r === `token`) {
             let t = e.session;
             if (!t?.accessToken && !e.apiToken)
@@ -9009,7 +9016,11 @@ export function createCheckinAutoContent(__contentScope) {
                                 `退出后重新登录（${r === `passkey` ? `Passkey` : r === `github` ? `GitHub OAuth` : `OAuth`}）`,
                               )
                             : null
-                          : C(`第二次${r === `passkey` ? ` Passkey` : ` OAuth`} 登录未确认成功`)
+                          : C(
+                              loginFailureMessage(
+                                `第二次${r === `passkey` ? ` Passkey` : ` OAuth`} 登录未确认成功`,
+                              ),
+                            )
                       : C(
                           `未找到${r === `passkey` ? ` Passkey` : ` OAuth`} 按钮，无法完成第二次登录`,
                         )
@@ -9035,7 +9046,7 @@ export function createCheckinAutoContent(__contentScope) {
                   }))
                     ? (await we(`relogin-verify`))
                       ? ae(`退出后重新登录`)
-                      : C(`第二次登录未确认成功`)
+                      : C(loginFailureMessage(`第二次登录未确认成功`))
                     : C(`未能提交登录表单`))
                 : C(ne()));
         case `relogin-verify`:
@@ -9045,27 +9056,33 @@ export function createCheckinAutoContent(__contentScope) {
               ? i && !(await O())
                 ? null
                 : (S.push(`第二次登录结果已确认，继续核验账号身份`), ae(`退出后重新登录`))
-              : C(`重新登录后缺少明确的登录成功证据，签到未完成`)
+              : C(loginFailureMessage(`重新登录后缺少明确的登录成功证据，签到未完成`))
           );
         default: {
           (S.push(`开始处理站点「${e.site.name}」账号 ${e.username}`),
-            await (0, __contentScope.U)(e.site, S));
-          let i = loginPageDetected
-              ? (S.push(`页面已显示登录入口，直接开始登录`), !1)
-              : await (0, __contentScope.br)(e.site, S, 6e3),
-            a = null;
-          if (!i && !loginPageDetected && r !== `token` && !(0, __contentScope.An)(e.site)) {
-            let e = await (0, __contentScope.qi)(v(), void 0, {
-              serverOnly: !0,
-            });
-            e?.source === `api`
-              ? (S.push(`页面上没有登录表单，但站点接口返回了当前登录身份，按已登录处理并核对账号`),
-                (i = !0),
-                (a = e))
-              : (S.push(
-                  `站点身份接口没有返回当前登录身份（未登录，或接口需要扩展拿不到的认证信息），按未登录处理`,
-                ),
-                (0, __contentScope.di)());
+            await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 }));
+          const initialLoginState = await readCurrentLoginState();
+          let i = initialLoginState.status === `authenticated`,
+            a = initialLoginState?.status === `authenticated` ? initialLoginState.identity : null;
+          if (
+            shouldProbeLoginIdentity(initialLoginState) &&
+            canProbeLoginIdentityPage() &&
+            shouldProbeLoginIdentity(
+              classifyLoginState((0, __contentScope.readLoginSnapshot)(v())),
+            ) &&
+            (await enterIdentityPage(
+              { identity: initialLoginState.identity ?? null },
+              { match: `unknown`, detail: initialLoginState.detail },
+              e.stage,
+              { loginVerification: !0 },
+            ))
+          )
+            throw loginVerificationNavigation;
+          if (!i && r !== `token`) {
+            if (!canStartLogin(initialLoginState))
+              return stopForUnconfirmedLogin(initialLoginState);
+            S.push(`页面已明确显示登录入口，开始使用本账号保存的登录方式`);
+            (0, __contentScope.di)();
           }
           if (i) {
             if (r === `manual`) {
@@ -9077,7 +9094,7 @@ export function createCheckinAutoContent(__contentScope) {
               );
               return null;
             }
-            if ((r === `form` || r === `auto`) && !g() && !formLoginSubmitted) {
+            if ((r === `form` || r === `auto`) && !hasBoundIdentity() && !formLoginSubmitted) {
               S.push(`首次确认本账号身份，先结束现有会话并使用本账号凭据登录`);
               const switched = await k();
               if (switched === `reloading`) return null;
@@ -9086,6 +9103,13 @@ export function createCheckinAutoContent(__contentScope) {
                   ? `无法清除当前站点会话，已停止本账号首次登录；请检查 Cookie 权限后重试`
                   : `本账号首次身份确认未完成，已停止自动重试；请检查登录凭据和站点页面`,
               );
+            }
+            if (r === `github` && !hasBoundIdentity() && e.githubCredentialsSubmitted !== !0) {
+              S.push(`首次确认本站 GitHub 身份，先使用本账号保存的凭据重新登录`);
+              const switched = await A();
+              return switched === `started`
+                ? null
+                : C(`GitHub 首次身份需要本账号的登录凭据，请检查已保存的 GitHub 用户名和密码`);
             }
             if (e.identityConfirmed)
               return (
@@ -9105,6 +9129,7 @@ export function createCheckinAutoContent(__contentScope) {
                 checkinPageAvailable: !!ge(),
                 canSwitchAccount: o,
               });
+            if (await enterIdentityPage(i, s, `checkin`)) return null;
             if (i.identity?.identityConflict) {
               await je(i, s);
               return null;
@@ -9189,6 +9214,25 @@ export function createCheckinAutoContent(__contentScope) {
               return C(`当前页面尚未显示站内账密或第三方登录入口，请确认本站登录页能够正常打开`);
             }
           }
+          // Announcements, SPA rendering or a completed popup may change the
+          // session while login options are being prepared. Recheck before
+          // looking for a provider button or filling any credentials.
+          await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 });
+          const beforeLoginState = await readCurrentLoginState(2500);
+          if (beforeLoginState.status === `authenticated`) {
+            S.push(`准备登录期间已确认当前会话登录，转入账号核验`);
+            if (r === `manual`) {
+              const verification = await confirmManualIdentity();
+              if (!verification.confirmed)
+                return stopForUnconfirmedLogin({
+                  status: `pending`,
+                  reason: `identity_unstable`,
+                  detail: verification.detail,
+                });
+            }
+            return M((0, __contentScope.uh)(n));
+          }
+          if (!canStartLogin(beforeLoginState)) return stopForUnconfirmedLogin(beforeLoginState);
           if (r === `manual`) return beginManualLogin();
           if (r === `oauth` || r === `github` || r === `passkey`)
             return (
@@ -9216,7 +9260,7 @@ export function createCheckinAutoContent(__contentScope) {
                           ? (await O())
                             ? M(!0)
                             : null
-                          : C(`OAuth 授权后未能确认登录成功`))
+                          : C(loginFailureMessage(`OAuth 授权后未能确认登录成功`)))
                     : C(
                         e.loginEntry
                           ? `当前页面未找到账号选定的「${e.loginEntry.label}」登录入口，请手动更新本站登录方式`
@@ -9289,10 +9333,11 @@ export function createCheckinAutoContent(__contentScope) {
               ),
               await (0, __contentScope.U)(e.site, S),
               M(!0))
-            : C(`登录结果未确认，请手动查看该标签页`);
+            : C(loginFailureMessage(`登录结果未确认，请手动查看该标签页`));
         }
       }
     } catch (e) {
+      if (e === loginVerificationNavigation) return null;
       let t = e instanceof Error ? e.message : String(e);
       return (S.push(`异常: ${t}`), C(t));
     }
@@ -9614,6 +9659,8 @@ export function createCheckinAutoContent(__contentScope) {
   __contentState.hh = hh;
   __contentState.detectPageLogin = detectPageLogin;
   __contentState.readLoginOptions = readLoginOptions;
+  __contentState.readLoginSnapshot = readLoginSnapshot;
+  __contentState.readLoginState = readLoginState;
   __contentState.hasVisibleLogoutControl = hasVisibleLogoutControl;
   __contentState.describeLoginControl = describeLoginControl;
   __contentState.findSelectedLoginControl = findSelectedLoginControl;
@@ -9635,6 +9682,9 @@ export function createCheckinAutoContent(__contentScope) {
       },
       readLoginOptions(...args) {
         return (0, __contentScope.readLoginOptions)(...args);
+      },
+      readLoginState(...args) {
+        return (0, __contentScope.readLoginState)(...args);
       },
       findSelectedLoginControl(...args) {
         return (0, __contentScope.findSelectedLoginControl)(...args);
@@ -10487,7 +10537,7 @@ export function createCheckinAutoContent(__contentScope) {
         order: 80,
         run() {
           __contentState.Hn =
-            /(?:登录|账号|账户|用户名|邮箱|密码|凭据).{0,24}(?:失败|错误|无效|不正确|不存在|已锁定|已过期|被拒绝)|(?:failed|error|invalid|incorrect|wrong|denied|expired|locked).{0,24}(?:login|account|user|email|password|credential)/i;
+            /(?:登录|账号|账户|用户名|邮箱|密码|凭据).{0,24}(?:失败|错误|无效|不正确|不存在|已锁定|已过期|被拒绝)|(?:failed|error|invalid|incorrect|wrong|denied|expired|locked).{0,24}(?:login|account|user|email|password|credential|authentication|authorization)|(?:login|sign[\s-]?in|password|credential|authentication|authorization|oauth).{0,24}(?:failed|failure|error|invalid|incorrect|wrong|denied|expired|locked|cancelled|canceled)/i;
         },
       },
       {

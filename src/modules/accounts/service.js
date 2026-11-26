@@ -5,6 +5,11 @@ import { bgCheckinState } from '../checkin/service.js';
 import { bgProxiesState } from '../proxies/service.js';
 import { bgPlatformState } from '../../shared/background-platform.js';
 import { bgEntryState } from '../../entries/background.js';
+import {
+  compareAccountIdentity,
+  findIdentityOwner,
+  parseIdentityResponse,
+} from '../../shared/account-identity.js';
 
 export const bgAccountsState = { store: {} };
 
@@ -179,23 +184,8 @@ function br(e) {
         : `未知来源`;
 }
 
-function xr(e) {
-  if (!e || typeof e != `object`) return null;
-  let t = e;
-  if (t.success === !1) return null;
-  let n = t.data ?? t;
-  if (!n || typeof n != `object`) return null;
-  let r = (e) => {
-      if (typeof e == `string` && e.trim()) return e.trim();
-      if (typeof e == `number` && Number.isFinite(e)) return String(e);
-    },
-    i = {
-      userId: r(n.id) ?? r(n.user_id) ?? r(n.userId),
-      username: r(n.username) ?? r(n.user_name) ?? r(n.name),
-      email: r(n.email),
-      displayName: r(n.display_name) ?? r(n.displayName) ?? r(n.nickname),
-    };
-  return Object.values(i).some(Boolean) ? i : null;
+function xr(response) {
+  return parseIdentityResponse(response);
 }
 
 function Sr(e) {
@@ -373,54 +363,8 @@ function Hr(e, t, n = [], r) {
   return null;
 }
 
-function Ur(e, t, n, r) {
-  let i = r?.pageAccountMatch,
-    a = i && (!e || e.source === `visible`) && Br(i, t) ? i : null;
-  if (!e)
-    return n
-      ? { match: `unknown`, detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID` }
-      : a
-        ? { match: `confirmed`, detail: `页面显示账号 ${a} 一致（读自页面文本）` }
-        : { match: `unknown`, detail: `读不到当前登录身份` };
-  let o = `读自${br(e.source)}`,
-    s = Hr(e, t, r?.expectedAliases, r?.expectedIdentity),
-    c = e.userId ? r?.knownUsers?.[e.userId] : void 0;
-  if (e.userId && c)
-    return {
-      match: `mismatch`,
-      detail: n
-        ? `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），本次要签到的是 ${n}`
-        : `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），不是本次账号 ${t}`,
-    };
-  if (n) {
-    if (!e.userId)
-      return {
-        match: `unknown`,
-        detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID（${o}）`,
-      };
-    return String(e.userId) === String(n)
-      ? { match: `confirmed`, detail: `用户 ID ${e.userId} 一致（${o}，账号备注不参与身份核验）` }
-      : {
-          match: `mismatch`,
-          detail: `当前登录的是用户 ID ${e.userId}（${o}），本次要签到的是 ${n}`,
-        };
-  }
-  let l = [e.username, e.email, e.displayName].filter(Boolean);
-  if (l.length === 0) return { match: `unknown`, detail: `站点未返回可比对的用户名（${o}）` };
-  let u = s?.value ?? a;
-  return u
-    ? {
-        match: `confirmed`,
-        detail:
-          s?.source === `stored`
-            ? `账号 ${t} 已保存的站点身份 ${s.expected} 与当前身份一致（${o}）`
-            : s?.source === `alias`
-              ? `账号 ${t} 保存的身份别名 ${s.expected} 与当前身份 ${u} 一致（${o}）`
-              : Br(u, t)
-                ? `账号 ${t} 一致（${o}）`
-                : `账号 ${t} 与站点用户名 ${u} 一致（${o}）`,
-      }
-    : { match: `mismatch`, detail: `当前登录的是 ${l[0]}（${o}），本次要签到的是 ${t}` };
+function Ur(identity, username, userId, options) {
+  return compareAccountIdentity(identity, username, userId, options);
 }
 
 function Wr(e, t = `rect`) {
@@ -452,28 +396,48 @@ function yo(e, t) {
 function Io(e, t) {
   let n = e.effectiveLoginMethod ?? `auto`,
     r = e.accountIdentityUserId,
+    hasBinding = !!r || !!e.accountIdentityUsername || !!e.accountIdentityEmail,
     managedForm =
       n === `form` &&
       e.formCredentialsSubmitted === !0 &&
       !!e.username?.trim() &&
       !!e.password &&
       t.verifiedByManagedLogin === !0;
-  if (t.source !== `api` && !(t.source === `visible` && managedForm))
-    return `只有站点接口身份或本轮账密登录后核验的页面身份可以更新账号绑定`;
+  const managedGithub =
+    n === `github` &&
+    e.githubCredentialsSubmitted === !0 &&
+    !!e.githubUsername?.trim() &&
+    !!e.githubPassword &&
+    t.verifiedByManagedLogin === !0;
+  const managedToken =
+    n === `token` &&
+    !!(e.session?.accessToken || e.apiToken) &&
+    t.source === `api` &&
+    t.verifiedByManagedLogin === !0;
+  if (t.identityConflict) return `身份证据冲突，已拒绝更新账号绑定`;
+  if (t.source !== `api` && !(t.source === `visible` && (managedForm || managedGithub)))
+    return `只有站点接口身份或本轮受控登录后核验的页面身份可以更新账号绑定`;
   if (t.userId && e.siteAccountUserIds?.[t.userId])
     return `该用户 ID 已属于本站其他账号，已拒绝修改本账号绑定`;
+  if (findIdentityOwner(t, e.siteAccountIdentities))
+    return `该身份已绑定给本站其他账号，已拒绝修改本账号绑定`;
   if (r && t.userId && String(r) !== String(t.userId))
     return `当前用户 ID 与本账号原有绑定不符，已保留原绑定`;
-  if (!r && t.userId && n === `auto`)
+  if (!hasBinding && (t.userId || t.username || t.email) && n === `auto`)
     return `首次绑定需要先识别当前页面的登录方式，并使用本账号的凭据登录`;
-  if (!r && t.userId && n === `form`)
+  if (!hasBinding && (t.userId || t.username || t.email) && n === `form`)
     return managedForm ? null : `首次绑定需要本轮提交此账号的站点密码并确认登录成功`;
-  if (n === `manual` && !r)
-    return t.userId && [t.username, t.email].some((value) => Br(value, e.username))
+  if (!hasBinding && (t.userId || t.username || t.email) && n === `token`)
+    return managedToken ? null : `首次 Token 绑定需要本账号凭据取得的稳定接口身份`;
+  if (!hasBinding && (t.userId || t.username || t.email) && n === `github`)
+    return managedGithub ? null : `首次 GitHub 绑定需要本账号凭据登录后取得的稳定身份`;
+  if (n === `manual` && !hasBinding)
+    return [t.username, t.email].some((value) => Br(value, e.username))
       ? null
-      : `手动登录首次绑定需要站点接口返回用户 ID，且用户名或完整邮箱与本账号精确一致`;
+      : `手动登录首次绑定需要站点接口返回用户名或完整邮箱，与本账号精确一致`;
   let i = Ur(t, e.username, r, {
     knownUsers: e.siteAccountUserIds,
+    knownIdentities: e.siteAccountIdentities,
     expectedIdentity: { username: e.accountIdentityUsername, email: e.accountIdentityEmail },
     ...(n === `github` && e.githubUsername ? { expectedAliases: [e.githubUsername] } : {}),
   });
@@ -581,7 +545,11 @@ export async function handleAccountsMessage(e, i) {
               !!n.username?.trim() &&
               !!n.password &&
               current.username?.trim() === n.username.trim() &&
-              current.password === n.password),
+              current.password === n.password) ||
+            (n.effectiveLoginMethod === `token` &&
+              !!(n.session?.accessToken || n.apiToken) &&
+              (n.session?.accessToken ?? n.apiToken) ===
+                (current.identity?.session?.accessToken ?? current.apiToken)),
           { verifiedByManagedLogin: a, ...o } = e.identity,
           s = a === !0 && r ? { ...o, verifiedByManagedLogin: !0 } : o,
           c = Io(
@@ -589,6 +557,16 @@ export async function handleAccountsMessage(e, i) {
               ...n,
               formCredentialsSubmitted: n.effectiveLoginMethod === `form` && r,
               accountIdentityUserId: current.identity?.userId,
+              accountIdentityUsername: current.identity?.username,
+              accountIdentityEmail: current.identity?.email,
+              siteAccountIdentities: accounts
+                .filter((account) => account.id !== current.id && account.siteId === current.siteId)
+                .map((account) => ({
+                  userId: account.identity?.userId,
+                  username: account.identity?.username,
+                  email: account.identity?.email,
+                  label: account.label || account.username,
+                })),
               siteAccountUserIds: Object.fromEntries(
                 accounts
                   .filter(
@@ -1097,6 +1075,28 @@ export function initializeBackgroundAccounts(step) {
                   : [],
               ),
               u = !!c && !!o.identity?.userId && o.identity.userId !== c;
+            if (
+              !c &&
+              findIdentityOwner(
+                s,
+                a
+                  .filter((account) => account.id !== e && account.siteId === o.siteId)
+                  .map((account) => ({
+                    ...account.identity,
+                    label: account.label || account.username,
+                  })),
+              )
+            )
+              throw Error(`本站其他账号已占用该登录标识，已保留原账号数据`);
+            if (
+              i.preserveBinding &&
+              !o.identity?.userId &&
+              (o.identity?.username || o.identity?.email) &&
+              compareAccountIdentity(s, o.username, void 0, {
+                expectedIdentity: o.identity,
+              }).match !== `confirmed`
+            )
+              throw Error(`登录标识与本账号原有绑定不符，已保留原绑定`);
             if (i.preserveBinding && (u || l.size > 0))
               throw Error(`身份绑定发生冲突，已保留原账号及其他账号的数据`);
             let d =

@@ -6,6 +6,20 @@ import { bgSliderState } from '../slider/service.js';
 import { bgProxiesState } from '../proxies/service.js';
 import { bgPlatformState } from '../../shared/background-platform.js';
 import { bgEntryState } from '../../entries/background.js';
+import {
+  compareAccountIdentity,
+  conflictingIdentitySamples,
+  findIdentityOwner,
+  readIdentitySource,
+} from '../../shared/account-identity.js';
+import {
+  isLearnedLotteryAction,
+  isLotteryPagePath,
+  lotteryAlreadyWords,
+  lotteryCompletedWords,
+  lotteryResultAssertionSelector,
+  mentionsLotteryAction,
+} from './lottery-learning.js';
 
 export const bgLearningState = { store: {} };
 
@@ -258,7 +272,11 @@ function Yu(e) {
   if (e.type === `click`) {
     let t = Hu(e);
     return (t && Uu(t)) ||
-      (e.loginAction && !(e.loginAction === `submit` && bgLearningState.Ru.test(e.label ?? ``))) ||
+      (e.loginAction &&
+        !(
+          e.loginAction === `submit` &&
+          (bgLearningState.Ru.test(e.label ?? ``) || isLearnedLotteryAction(e))
+        )) ||
       Ku(e) ||
       Ju(e)
       ? `none`
@@ -268,7 +286,11 @@ function Yu(e) {
           ? `confirmed`
           : qu(e)
             ? `none`
-            : e.label && bgLearningState.Ru.test(e.label)
+            : isLearnedLotteryAction(e) ||
+                (e.label &&
+                  !e.href &&
+                  !mentionsLotteryAction(e.label) &&
+                  bgLearningState.Ru.test(e.label))
               ? `action`
               : `none`;
   }
@@ -439,7 +461,8 @@ function Rd(e) {
 function zd(e) {
   if (!e || (e.kind !== `success` && e.kind !== `already`) || !Array.isArray(e.words)) return;
   let t = e.words.filter((e) => typeof e == `string` && Wf(e)).slice(0, 4);
-  return t.length ? { kind: e.kind, words: t } : void 0;
+  let selector = Hf(e.selector);
+  return t.length ? { kind: e.kind, words: t, ...(selector ? { selector } : {}) } : void 0;
 }
 
 function Bd(e) {
@@ -499,6 +522,7 @@ function Kd(e) {
       ? e.loginAction === `oauth` ||
         !(
           e.loginAction !== `submit` ||
+          isLearnedLotteryAction(e) ||
           bgLearningState.Sd.test(e.label ?? ``) ||
           (e.href && !bgLearningState.Md.test(e.href))
         )
@@ -577,6 +601,7 @@ function Jd(e) {
         n = Rd(r);
       (n.length && (e.afterText = n),
         i && (e.evidence = i),
+        isLearnedLotteryAction(r) && (e.checkinAction = `lottery`),
         r.type === `fill` && (e.hasValue = r.hasValue),
         Vd(r) && Object.assign(e, Ud(r)));
       continue;
@@ -587,6 +612,7 @@ function Jd(e) {
         selector: e,
         label: r.label ?? ``,
         path: r.path,
+        ...(isLearnedLotteryAction(r) ? { checkinAction: `lottery` } : {}),
         ...(r.type === `click` && r.href ? { href: r.href } : {}),
         ...(r.type === `fill` ? { hasValue: r.hasValue } : {}),
         ...(r.type === `fill` && r.fieldRole ? { fieldRole: r.fieldRole } : {}),
@@ -692,7 +718,12 @@ function nf(e, t, n) {
     o = [...a].reverse().find((e) => !!e.evidence),
     s = [...a]
       .reverse()
-      .find((e) => bgLearningState.Sd.test(e.label ?? ``) || bgLearningState.Cd.test(e.path)),
+      .find(
+        (e) =>
+          isLearnedLotteryAction(e) ||
+          bgLearningState.Sd.test(e.label ?? ``) ||
+          bgLearningState.Cd.test(e.path),
+      ),
     c = a.at(-1),
     l = o ?? s ?? c;
   if (l && !o) {
@@ -902,26 +933,66 @@ function _f(e, t, n = {}) {
       })
       .map((e) => gf(e, a));
   if (o.length === 0) return null;
+  const lastLottery = o.findLastIndex(isLearnedLotteryAction);
+  const lotteryOutcome = lastLottery >= 0 ? o[lastLottery].evidence : undefined;
+  const lotteryScopes = lotteryOutcome?.selector ? [lotteryOutcome.selector] : [];
+  // 开奖后关闭结果框等收尾动作会移除成功证据，回放在最后一次开奖处结束。
+  if (lastLottery >= 0 && lotteryScopes.length) o = o.slice(0, lastLottery + 1);
   let s = nf(e, i, o),
-    c = lf(e, o, s),
+    learnedPath = n.identityPath ? Ld(e, n.identityPath) : null,
+    c = learnedPath && !Qd(e, learnedPath) ? learnedPath : lf(e, o, s),
     l = uf(s, c),
-    u = o.some((e) => bgCheckinState.Ds.test(e.label ?? ``)),
+    u = o.some(isLearnedLotteryAction),
     d = pf(o, l, bgLearningState.xd + (u ? 3 : 0)),
-    f = [...o].reverse().find((e) => e.evidence)?.evidence,
-    p = u ? bgCheckinState.Ts : f?.kind === `success` ? f.words : bgLearningState.Od,
-    m = u ? bgCheckinState.Es : f?.kind === `already` ? f.words : bgLearningState.kd;
+    f = u ? lotteryOutcome : [...o].reverse().find((e) => e.evidence)?.evidence,
+    p = u
+      ? [
+          ...new Set([
+            ...bgCheckinState.Ts,
+            ...(lotteryScopes.length ? lotteryCompletedWords : []),
+            ...(f?.kind === `success` ? f.words : []),
+          ]),
+        ]
+      : f?.kind === `success`
+        ? f.words
+        : bgLearningState.Od,
+    m = u
+      ? [
+          ...new Set([
+            ...bgCheckinState.Es,
+            ...lotteryAlreadyWords,
+            ...(f?.kind === `already` ? f.words : []),
+          ]),
+        ]
+      : f?.kind === `already`
+        ? f.words
+        : bgLearningState.kd,
+    resultSelector = u ? lotteryResultAssertionSelector(lotteryScopes, p) : ``;
   return (
     u &&
-      (d.push({ type: `assert`, text: [...p, ...m], timeoutMs: 15e3 }),
+      (d.push({
+        type: `assert`,
+        ...(resultSelector ? { selector: resultSelector, text: m } : { text: [...p, ...m] }),
+        timeoutMs: 15e3,
+      }),
       d.unshift({
         type: `if`,
-        condition: { type: `text`, words: bgCheckinState.Es },
-        then: [{ type: `assert`, text: bgCheckinState.Es, result: `already` }],
+        condition: { type: `text`, words: m },
+        then: [{ type: `assert`, text: m, result: `already` }],
       })),
     d.push({
       type: `if`,
-      condition: { type: `text`, words: p },
-      then: [{ type: `assert`, text: p, result: `success`, timeoutMs: 5e3 }],
+      condition: resultSelector
+        ? { type: `selector`, selector: resultSelector }
+        : { type: `text`, words: p },
+      then: [
+        {
+          type: `assert`,
+          ...(resultSelector ? { selector: resultSelector } : { text: p }),
+          result: `success`,
+          timeoutMs: 5e3,
+        },
+      ],
       else: [{ type: `assert`, text: m, result: u ? `success` : `already`, timeoutMs: 5e3 }],
     }),
     {
@@ -941,26 +1012,37 @@ function vf(e, t, n = `both`, r = {}) {
   if (n !== `login`) {
     if (s) l = { kind: `login-as-checkin` };
     else {
-      let n = _f(e, t, { personalTexts: r.personalTexts })?.workflow ?? null;
+      let n =
+        _f(e, t, { personalTexts: r.personalTexts, identityPath: r.identityPath })?.workflow ??
+        null;
       n?.identityPath && (l = { kind: `workflow`, workflow: n });
     }
   }
-  let u = [];
+  let u = [],
+    lotteryPageOnly =
+      t.some((event) => isLotteryPagePath(Hu(event))) &&
+      !t.some(isLearnedLotteryAction) &&
+      $u(t, n).checkin === `none`,
+    lotteryNotice = `只打开了抽奖页面，还没有录到实际抽奖。请在原页面点击礼盒或抽奖按钮，等开奖结果出现后，再点「结束学习」。本次学习还在继续，不需要重新开始`;
   return (
     n === `login`
       ? a || u.push(`还没有录到完整的登录动作；请手动完成登录后再结束学习`)
       : !a && !l
         ? u.push(
-            c
-              ? `这次演示还没有录到任何登录或签到动作。若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请继续在原页面演示：完成一遍登录并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`
-              : `这次演示还没有录到任何登录或签到动作。请先在打开的站点页面里完成一遍登录、并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`,
+            lotteryPageOnly
+              ? lotteryNotice
+              : c
+                ? `这次演示还没有录到任何登录或签到动作。若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请继续在原页面演示：完成一遍登录并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`
+                : `这次演示还没有录到任何登录或签到动作。请先在打开的站点页面里完成一遍登录、并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`,
           )
         : a
           ? l ||
             u.push(
-              c
-                ? `没有录到签到动作：若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请在签到按钮可点时重新演示一次`
-                : `没有录到登录之后的签到动作，这次只保存登录配置；请在按钮可点时重新演示一次签到`,
+              lotteryPageOnly
+                ? lotteryNotice
+                : c
+                  ? `没有录到签到动作：若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请在签到按钮可点时重新演示一次`
+                  : `没有录到登录之后的签到动作，这次只保存登录配置；请在按钮可点时重新演示一次签到`,
             )
           : u.push(`没有录到完整的登录动作（账号/密码字段或第三方登录入口），这次只保存签到流程`),
     o &&
@@ -1419,15 +1501,7 @@ function Uf(e) {
       at: e.at,
     };
   }
-  let o =
-      e.evidence &&
-      (e.evidence.kind === `success` || e.evidence.kind === `already`) &&
-      Array.isArray(e.evidence.words)
-        ? {
-            kind: e.evidence.kind,
-            words: e.evidence.words.filter((e) => typeof e == `string` && Wf(e)).slice(0, 4),
-          }
-        : void 0,
+  let o = zd(e.evidence),
     s = Lf(e.anchor),
     c = Bf(e.gesture),
     l = Vf(e.key),
@@ -1445,6 +1519,7 @@ function Uf(e) {
     selector: a,
     label: r,
     path: i,
+    ...(isLearnedLotteryAction(e) ? { checkinAction: `lottery` } : {}),
     ...(If(e.href) ? { href: If(e.href) } : {}),
     ...(e.loginAction === `entry` || e.loginAction === `submit` || e.loginAction === `oauth`
       ? { loginAction: e.loginAction }
@@ -1804,6 +1879,59 @@ async function Fm(e, t) {
   return rp(t.url ?? t.tab?.url, await Pm(e));
 }
 
+function sanitizeLearnedIdentitySource(value, site, currentPath, kind) {
+  const source = readIdentitySource({ identitySource: value });
+  if (!source) return null;
+  const result = {};
+  const safeUrl = (path, page = false) => {
+    try {
+      const url = new URL(path, site.loginUrl);
+      if (
+        url.origin !== new URL(site.loginUrl).origin ||
+        !/^https?:$/.test(url.protocol) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        (!page && url.hash) ||
+        /(?:access_token|refresh_token|id_token|code|state|token|secret|password)=/i.test(url.hash)
+      )
+        return null;
+      return url.pathname + url.hash;
+    } catch {
+      return null;
+    }
+  };
+  if (kind === 'api' && source.endpoint && source.responseFields) {
+    const endpoint = safeUrl(source.endpoint);
+    const responseFields = {};
+    for (const [field, path] of Object.entries(source.responseFields))
+      if (/^[\w-]+(?:\.[\w-]+)*$/.test(path)) responseFields[field] = path;
+    if (endpoint && Object.keys(responseFields).length)
+      Object.assign(result, { endpoint, responseFields });
+  }
+  if (source.pagePath && source.pageFields) {
+    const pagePath = safeUrl(source.pagePath, true);
+    if (pagePath === currentPath)
+      Object.assign(result, {
+        pagePath,
+        pageFields: source.pageFields,
+        ...(source.pageFieldRules ? { pageFieldRules: source.pageFieldRules } : {}),
+      });
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function latestLearningLogin(events = []) {
+  return [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.loginAction === 'submit' ||
+        event.loginAction === 'oauth' ||
+        (event.type === 'fill' && event.fieldRole === 'password' && event.key === 'Enter'),
+    );
+}
+
 async function recordLearningIdentity(observation, sender, runId) {
   const tabId = sender.tab?.id;
   if (tabId == null || !bgProxiesState.Xn(sender.frameId))
@@ -1819,9 +1947,18 @@ async function recordLearningIdentity(observation, sender, runId) {
     return { ok: false, error: '学习目标账号归属已改变' };
   const identity = observation?.identity;
   if (
-    identity?.source !== 'visible' ||
-    typeof identity.userId !== 'string' ||
-    !/^\d{1,12}$/.test(identity.userId)
+    !['visible', 'api'].includes(identity?.source) ||
+    (identity.source === 'api' && observation.stable !== true) ||
+    identity.identityConflict ||
+    !(
+      (typeof identity.userId === 'string' && /^[\w.:-]{1,128}$/.test(identity.userId)) ||
+      ['username', 'email'].some(
+        (field) =>
+          typeof identity[field] === 'string' &&
+          identity[field].trim() &&
+          identity[field].length <= 128,
+      )
+    )
   )
     return { ok: true, ignored: true };
   let currentPath;
@@ -1833,18 +1970,39 @@ async function recordLearningIdentity(observation, sender, runId) {
   }
   if (observation.path !== currentPath || currentPath.length > 500)
     return { ok: true, ignored: true };
-  const login = [...session.events]
-    .reverse()
-    .find(
-      (event) =>
-        event.loginAction === 'submit' ||
-        event.loginAction === 'oauth' ||
-        (event.type === 'fill' && event.fieldRole === 'password' && event.key === 'Enter'),
-    );
-  if (!login && account.identity?.userId !== identity.userId) return { ok: true, ignored: true };
+  const site = bgSitesState.Y(
+    session.siteId,
+    await bgPlatformState.t.get(bgPlatformState.r.sites, []),
+  );
+  if (!site) return { ok: false, error: '学习站点已不存在' };
+  const sourceDescriptor = sanitizeLearnedIdentitySource(
+    observation.identitySource ?? identity.identitySource,
+    site,
+    currentPath,
+    identity.source,
+  );
+  if (identity.source === 'api' && !sourceDescriptor?.endpoint)
+    return { ok: true, ignored: true, reason: '尚未取得可重读的当前用户接口与字段路径' };
+  const login = latestLearningLogin(session.events);
+  if (
+    !login &&
+    (!(account.identity?.userId || account.identity?.username || account.identity?.email) ||
+      compareAccountIdentity(identity, account.username, account.identity?.userId, {
+        expectedIdentity: account.identity,
+      }).match !== 'confirmed')
+  )
+    return {
+      ok: true,
+      ignored: true,
+      reason: '已读到页面身份；请先演示本账号的登录，再学习身份读取位置',
+    };
   if (login && Ff(login.path) === Ff(currentPath)) return { ok: true, ignored: true };
   const previous = session.learnedIdentities?.[currentPath];
-  const clean = { userId: identity.userId, source: 'visible', verifiedByLearning: true };
+  const clean = {
+    ...(identity.userId ? { userId: identity.userId } : {}),
+    source: identity.source,
+    verifiedByLearning: true,
+  };
   for (const field of ['username', 'email'])
     if (
       typeof identity[field] === 'string' &&
@@ -1852,38 +2010,141 @@ async function recordLearningIdentity(observation, sender, runId) {
       identity[field].length <= 160
     )
       clean[field] = identity[field].trim();
+  const sameLogin = previous?.loginAt === login?.at;
+  const previousSource = sameLogin ? previous?.sourceDescriptor : null;
+  const selectedFields = (
+    Array.isArray(observation.selectedFields) ? observation.selectedFields : []
+  ).filter(
+    (field) =>
+      ['userId', 'username', 'email'].includes(field) && sourceDescriptor?.pageFields?.[field],
+  );
+  const descriptor = sourceDescriptor
+    ? {
+        ...previousSource,
+        ...sourceDescriptor,
+        ...(previousSource?.pageFields || sourceDescriptor.pageFields
+          ? { pageFields: { ...previousSource?.pageFields, ...sourceDescriptor.pageFields } }
+          : {}),
+        ...(previousSource?.pageFieldRules || sourceDescriptor.pageFieldRules
+          ? {
+              pageFieldRules: {
+                ...previousSource?.pageFieldRules,
+                ...sourceDescriptor.pageFieldRules,
+              },
+            }
+          : {}),
+      }
+    : previousSource;
   const value = {
     identity: clean,
     loginAt: login?.at,
+    ...(descriptor ? { sourceDescriptor: descriptor } : {}),
+    selectedFields: [
+      ...new Set([...(sameLogin ? (previous?.selectedFields ?? []) : []), ...selectedFields]),
+    ],
     conflict:
-      previous?.conflict === true || (!!previous && previous.identity.userId !== clean.userId),
+      (sameLogin && previous?.conflict === true) ||
+      Object.values(session.learnedIdentities ?? {}).some(
+        (sample) =>
+          sample.loginAt === login?.at && conflictingIdentitySamples(sample.identity, clean),
+      ),
   };
   await bgPlatformState.n.set(bgLearningState.a(tabId), {
     ...session,
     learnedIdentities: { ...session.learnedIdentities, [currentPath]: value },
+    ...(sourceDescriptor &&
+    (session.identitySourceLoginAt !== login?.at ||
+      selectedFields.length ||
+      !session.identitySourcePath ||
+      (sourceDescriptor.pageFields && !session.identitySourceSelected))
+      ? {
+          identitySourcePath: currentPath,
+          identitySourceLoginAt: login?.at,
+          identitySourceSelected:
+            selectedFields.length > 0 ||
+            (session.identitySourceLoginAt === login?.at &&
+              session.identitySourceSelected === true),
+        }
+      : {}),
   });
   return { ok: true };
 }
 
 async function prepareLearnedAccountIdentity(session, account, site, workflow) {
-  if (!workflow?.identityPath) return null;
-  const url = new URL(workflow.identityPath, site.loginUrl);
+  const identityPath = session.identitySourcePath ?? workflow?.identityPath;
+  if (!identityPath) return null;
+  const url = new URL(identityPath, site.loginUrl);
   if (!bgCheckinState.N(site, url.href)) throw Error('学习的身份核验页不在本站');
   const sample = session.learnedIdentities?.[url.pathname + url.hash];
   if (!sample) return null;
+  if (sample.loginAt !== latestLearningLogin(session.events)?.at)
+    throw Error('身份字段来自上一次登录，请在本次登录后重新打开个人资料页核验');
   if (sample.conflict) throw Error('学习期间身份核验页出现过不同用户 ID，请确认目标账号后重新学习');
   const identity = sample.identity;
   const accounts = await bgPlatformState.t.get(bgPlatformState.r.accounts, []),
     sites = await bgPlatformState.t.get(bgPlatformState.r.sites, []);
   const current = accounts.find((item) => item.id === account.id);
   if (!current || current.siteId !== site.id) throw Error('学习目标账号归属已改变');
-  if (current.identity?.userId && current.identity.userId !== identity.userId)
-    throw Error('学习页用户 ID 与本账号原有绑定不符，已保留原绑定，请确认当前登录账号');
-  const conflict = Kp(accounts, sites, site).find(
-    (item) => item.id !== account.id && item.identity?.userId === identity.userId,
+  if (
+    (current.identity?.userId || current.identity?.username || current.identity?.email) &&
+    compareAccountIdentity(identity, current.username, current.identity?.userId, {
+      expectedIdentity: current.identity,
+    }).match !== 'confirmed'
+  )
+    throw Error('学习页身份与本账号原有绑定不符，已保留原绑定，请确认当前登录账号');
+  if (
+    !identity.userId &&
+    compareAccountIdentity(identity, current.username, undefined, {
+      expectedIdentity: current.identity,
+    }).match !== 'confirmed'
+  )
+    throw Error('学习页登录名未能精确核对到本账号，已保留原绑定');
+  if (
+    Object.values(session.learnedIdentities ?? {}).some(
+      (other) =>
+        other.loginAt === sample.loginAt && conflictingIdentitySamples(other.identity, identity),
+    )
+  )
+    throw Error('本次登录的不同页面出现过不同账号身份，请确认目标账号后重新学习');
+  const conflict = findIdentityOwner(
+    identity,
+    Kp(accounts, sites, site)
+      .filter((item) => item.id !== account.id)
+      .map((item) => ({ ...item.identity, label: item.label || item.username })),
   );
   if (conflict) throw Error('学习页用户 ID 已绑定给本站其他账号，已保留原有账号数据');
   return identity;
+}
+
+function prepareLearnedIdentitySource(session, site, identity) {
+  if (!identity) return null;
+  const preferred = session.learnedIdentities?.[session.identitySourcePath];
+  const samples = Object.values(session.learnedIdentities ?? {}).filter(
+    (sample) =>
+      sample.loginAt === preferred?.loginAt &&
+      sample.sourceDescriptor &&
+      !sample.conflict &&
+      !conflictingIdentitySamples(sample.identity, identity),
+  );
+  if (!samples.length) return null;
+  const page = preferred?.sourceDescriptor?.pageFields
+    ? preferred.sourceDescriptor
+    : (samples.find((sample) => sample.selectedFields?.length)?.sourceDescriptor ??
+      samples.find((sample) => sample.sourceDescriptor.pageFields)?.sourceDescriptor);
+  const api = [...samples]
+    .reverse()
+    .find((sample) => sample.sourceDescriptor.endpoint)?.sourceDescriptor;
+  return {
+    ...readIdentitySource(site),
+    ...(api ? { endpoint: api.endpoint, responseFields: api.responseFields } : {}),
+    ...(page
+      ? {
+          pagePath: page.pagePath,
+          pageFields: page.pageFields,
+          pageFieldRules: page.pageFieldRules,
+        }
+      : {}),
+  };
 }
 
 async function Im(e, i, o = {}) {
@@ -1944,10 +2205,15 @@ async function Im(e, i, o = {}) {
         error: `还不能按「登录即签到」保存：需要先登录成功并进入站内页面，且本次演示没有点到过签到按钮。请继续演示（或点「结束学习」按现有内容保存）`,
       };
     let C = Jp(d),
-      w = vf(p, s.events, l, { loginAsCheckin: S, personalTexts: C }),
+      w = vf(p, s.events, l, {
+        loginAsCheckin: S,
+        personalTexts: C,
+        identityPath: s.identitySourcePath,
+      }),
       T =
         w.checkin?.kind === `login-as-checkin`
-          ? (_f(p, s.events, { personalTexts: C })?.workflow ?? null)
+          ? (_f(p, s.events, { personalTexts: C, identityPath: s.identitySourcePath })?.workflow ??
+            null)
           : null,
       E = s.endLearningPrompted === !0,
       D = bf({
@@ -2103,11 +2369,22 @@ async function Im(e, i, o = {}) {
       );
     if (k.length && A.length === 0 && learnedIdentity)
       try {
+        const learnedSource = prepareLearnedIdentitySource(s, re, learnedIdentity);
+        if (learnedSource) {
+          await bgSitesState.store.updateSite(p.id, {
+            identitySource: { ...learnedSource, learnedAt: Date.now() },
+          });
+          ee.push(
+            `已学会本站身份读取位置${learnedSource.endpoint ? `（接口 ${learnedSource.endpoint}）` : `（页面 ${learnedSource.pagePath}）`}，本站现有和新增账号统一复用；各账号单独保存自己的身份值`,
+          );
+        }
         await bgAccountsState.store.saveAccountIdentity(d.id, learnedIdentity, {
           preserveBinding: !0,
         });
         ee.push(
-          `已将本账号绑定到本站用户 ID ${learnedIdentity.userId}，以后按 ID 核验，备注仅用于显示`,
+          learnedIdentity.userId
+            ? `已将本账号绑定到本站用户 ID ${learnedIdentity.userId}，以后按 ID 核验，备注仅用于显示`
+            : `已将本账号绑定到本站登录标识 ${learnedIdentity.username ?? learnedIdentity.email}，以后按完整登录标识核验`,
         );
       } catch (error) {
         A.push(error instanceof Error ? error.message : String(error));
@@ -2212,6 +2489,14 @@ async function Im(e, i, o = {}) {
     createdAt: Date.now(),
     events: [],
     personalTexts: Jp(c),
+    identitySite: {
+      id: u.id,
+      loginUrl: u.loginUrl,
+      adapter: { family: u.adapter?.family },
+      identitySource: readIdentitySource(u),
+      ...(u.tokenConfig ? { tokenConfig: u.tokenConfig } : {}),
+      ...(u.authBootstrap ? { authBootstrap: u.authBootstrap } : {}),
+    },
   };
   (await bgPlatformState.n.set(bgLearningState.a(m), _),
     await chrome.tabs.update(m, { active: !0 }).catch(() => {}));
@@ -2515,7 +2800,10 @@ Object.assign(bgLearningState, {
   Pm,
   Fm,
   recordLearningIdentity,
+  sanitizeLearnedIdentitySource,
+  latestLearningLogin,
   prepareLearnedAccountIdentity,
+  prepareLearnedIdentitySource,
   Im,
   Lm,
   Rm,

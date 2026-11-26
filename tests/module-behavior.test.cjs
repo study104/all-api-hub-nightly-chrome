@@ -21,6 +21,7 @@ const backgroundBundle = esbuild.buildSync({
       export { checkinService } from './src/modules/checkin/service.js';
       export { bgCheckinState } from './src/modules/checkin/service.js';
       export { learningService } from './src/modules/learning/service.js';
+      export { bgLearningState } from './src/modules/learning/service.js';
     `,
     resolveDir: workspace,
   },
@@ -1240,7 +1241,7 @@ test('accounts: manual login binds only an exact API username or full email and 
     { userId: '101', displayName: 'alice@example.test', source: 'api' },
     { userId: '101', username: 'alice', source: 'api' },
     { userId: '101', email: 'someone@example.test', source: 'api' },
-    { username: 'alice@example.test', source: 'api' },
+    { email: 'ali***@example.test', source: 'api' },
     { userId: '102', email: 'alice@example.test', source: 'api' },
   ]) {
     assert.equal((await fixture.save(identity)).ok, false);
@@ -1261,6 +1262,117 @@ test('accounts: manual login binds only an exact API username or full email and 
   fixture.local.accounts[0].username = 'alice@example.test';
   fixture.local.accounts[0].loginMethod = 'oauth';
   assert.equal((await fixture.save({ userId: '101', source: 'api' })).ok, false);
+});
+
+test('accounts: name-only form identity requires this account submission and keeps its saved name', async () => {
+  const fixture = formIdentityFixture();
+  const identity = { username: 'alice', source: 'api', verifiedByManagedLogin: true };
+  assert.equal((await fixture.save(identity)).ok, false);
+  assert.equal(fixture.local.accounts[0].identity, undefined);
+  assert.equal((await fixture.submit()).ok, true);
+  assert.equal((await fixture.save(identity)).ok, true);
+  assert.equal(fixture.local.accounts[0].identity.userId, undefined);
+  assert.equal(fixture.local.accounts[0].identity.username, 'alice');
+  fixture.session['task:1'].formCredentialsSubmitted = false;
+  assert.equal((await fixture.save({ username: 'alice', source: 'api' })).ok, true);
+  assert.equal((await fixture.save({ username: 'someone', source: 'api' })).ok, false);
+  assert.equal(fixture.local.accounts[0].identity.username, 'alice');
+});
+
+test('accounts: manual login can bind the exact API name of a site without user IDs', async () => {
+  const fixture = formIdentityFixture();
+  fixture.local.accounts[0].username = 'alice@example.test';
+  delete fixture.local.accounts[0].password;
+  Object.assign(fixture.session['task:1'], {
+    username: 'alice@example.test',
+    password: undefined,
+    loginMethodPreference: 'auto',
+    effectiveLoginMethod: 'manual',
+    stage: 'verify-manual',
+  });
+  assert.equal((await fixture.save({ email: 'alice@example.test', source: 'api' })).ok, true);
+  assert.equal(fixture.local.accounts[0].identity.userId, undefined);
+  assert.equal(fixture.local.accounts[0].identity.email, 'alice@example.test');
+  assert.equal((await fixture.save({ email: 'someone@example.test', source: 'api' })).ok, false);
+});
+
+test('accounts: name-only identity cannot take another saved account binding', async () => {
+  const fixture = formIdentityFixture();
+  fixture.local.accounts[1].identity = { username: 'alice', source: 'api' };
+  const before = structuredClone(fixture.local.accounts);
+  assert.equal((await fixture.submit()).ok, true);
+  assert.equal(
+    (await fixture.save({ username: 'alice', source: 'api', verifiedByManagedLogin: true })).ok,
+    false,
+  );
+  assert.deepEqual(fixture.local.accounts, before);
+});
+
+test('accounts: first Token binding requires unchanged credentials belonging to this account', async () => {
+  const fixture = formIdentityFixture();
+  fixture.local.accounts[0].apiToken = 'alice-token';
+  Object.assign(fixture.session['task:1'], {
+    loginMethodPreference: 'token',
+    effectiveLoginMethod: 'token',
+    apiToken: 'alice-token',
+  });
+  const identity = { userId: '101', source: 'api', verifiedByManagedLogin: true };
+  assert.equal((await fixture.save({ userId: '101', source: 'api' })).ok, false);
+  fixture.local.accounts[0].apiToken = 'changed-token';
+  assert.equal((await fixture.save(identity)).ok, false);
+  fixture.local.accounts[0].apiToken = 'alice-token';
+  assert.equal((await fixture.save(identity)).ok, true);
+  assert.equal(fixture.local.accounts[0].identity.userId, '101');
+});
+
+test('accounts: first GitHub site ID binding requires its own unchanged login credentials', async () => {
+  const fixture = formIdentityFixture();
+  Object.assign(fixture.local.accounts[0], {
+    githubUsername: 'alice-github',
+    githubPassword: 'github-password',
+  });
+  Object.assign(fixture.session['task:1'], {
+    loginMethodPreference: 'github',
+    effectiveLoginMethod: 'github',
+    githubUsername: 'alice-github',
+    githubPassword: 'github-password',
+    githubCredentialsSubmitted: false,
+  });
+  const identity = {
+    userId: '101',
+    username: 'github_100',
+    source: 'visible',
+    verifiedByManagedLogin: true,
+  };
+  assert.equal((await fixture.save(identity)).ok, false);
+  fixture.session['task:1'].githubCredentialsSubmitted = true;
+  fixture.local.accounts[0].githubPassword = 'changed-password';
+  assert.equal((await fixture.save(identity)).ok, false);
+  fixture.local.accounts[0].githubPassword = 'github-password';
+  assert.equal((await fixture.save(identity)).ok, true);
+  assert.equal(fixture.local.accounts[0].identity.userId, '101');
+  assert.equal(fixture.local.accounts[0].identity.username, 'github_100');
+});
+
+test('accounts: preserved name-only bindings cannot be rewritten after changing an account label', async () => {
+  const fixture = formIdentityFixture();
+  fixture.local.accounts[0].identity = { username: 'original-user', source: 'api' };
+  const before = structuredClone(fixture.local.accounts);
+  assert.equal((await fixture.submit()).ok, true);
+  assert.equal(
+    (await fixture.save({ username: 'alice', source: 'api', verifiedByManagedLogin: true })).ok,
+    false,
+  );
+  await assert.rejects(
+    () =>
+      fixture.services.accountService.saveIdentity(
+        'alice',
+        { username: 'alice', source: 'api' },
+        { preserveBinding: true },
+      ),
+    /原有绑定|原绑定/,
+  );
+  assert.deepEqual(fixture.local.accounts, before);
 });
 
 test('accounts: saved login entries accept only safe matching metadata and changing methods clears old choices', async () => {
@@ -1463,6 +1575,180 @@ test('learning: ending on a page without a button requires explicit login-as-che
   assert.equal(fixture.local.sites[0].checkin.learnedLoginAsCheckinSource, 'explicit');
 });
 
+test('learning: a Baibei-style gift outcome survives event normalization and saves a scoped replay', async () => {
+  const site = {
+    id: 'lottery-site',
+    name: 'Lottery',
+    loginUrl: 'https://lottery.test/login',
+    loginMethod: 'form',
+    selectors: {},
+    checkin: { method: 'auto' },
+  };
+  const fixture = browserFixture({
+    sites: [site],
+    accounts: [
+      {
+        id: 'draw-user',
+        siteId: site.id,
+        username: 'draw-user',
+        password: 'draw-password',
+        identity: { userId: '42', source: 'visible' },
+      },
+    ],
+  });
+  const runId = 'learn-lottery';
+  fixture.tabUrls.set(1, 'https://lottery.test/lottery');
+  fixture.session['learn:1'] = {
+    tabId: 1,
+    runId,
+    siteId: site.id,
+    accountId: 'draw-user',
+    kind: 'checkin',
+    createdAt: Date.now(),
+    events: [],
+  };
+  const sender = {
+    id: 'test-extension',
+    frameId: 0,
+    tab: { id: 1, url: 'https://lottery.test/lottery' },
+    url: 'https://lottery.test/lottery',
+  };
+  const action = {
+    type: 'click',
+    selector: '.gift',
+    label: '',
+    path: '/lottery',
+    checkinAction: 'lottery',
+    fingerprint: { tag: 'div', role: 'button' },
+    at: 1000,
+  };
+  for (const event of [
+    action,
+    {
+      ...action,
+      afterText: ['Thanks for playing'],
+      evidence: { kind: 'success', words: ['Thanks for playing'], selector: '.result-pop' },
+    },
+    {
+      type: 'click',
+      selector: '#dismiss-result',
+      label: '知道了',
+      path: '/lottery',
+      at: 2000,
+    },
+  ]) {
+    const recorded = await fixture.services.learningService.recordEvent(event, sender, runId);
+    assert.equal(recorded.ok, true, recorded.error);
+  }
+  const recordedAction = fixture.session['learn:1'].events.find(
+    (event) => event.selector === '.gift' && event.evidence,
+  );
+  assert.equal(recordedAction.checkinAction, 'lottery');
+  assert.equal(recordedAction.evidence.selector, '.result-pop');
+  const saved = await fixture.services.learningService.toggle('draw-user', 'checkin');
+  assert.equal(saved.ok, true, saved.error);
+  assert.ok(saved.feature.learning.savedKinds.includes('checkin'));
+  const checkin = fixture.local.sites.find((item) => item.id === site.id).checkin;
+  assert.equal(checkin.method, 'workflow');
+  assert.ok(checkin.workflow.route.includes('/lottery'));
+  const serialized = JSON.stringify(checkin.workflow);
+  assert.ok(serialized.includes('"selector":".gift"'));
+  assert.ok(serialized.includes('.result-pop >> text=Thanks for playing'));
+  assert.ok(serialized.includes('.result-pop >> text=You won'));
+  assert.equal(serialized.includes('#dismiss-result'), false);
+  assert.equal(fixture.local.accounts[0].identity.userId, '42');
+  assert.equal(fixture.session['learn:1'], undefined);
+});
+
+test('learning: entering the lottery page without drawing cannot replace the saved check-in method', async () => {
+  const site = {
+    id: 'lottery-site',
+    name: 'Lottery',
+    loginUrl: 'https://lottery.test/login',
+    loginMethod: 'form',
+    selectors: {},
+    checkin: { method: 'auto' },
+  };
+  const fixture = browserFixture({
+    sites: [site],
+    accounts: [{ id: 'draw-user', siteId: site.id, username: 'draw-user', password: 'password' }],
+  });
+  fixture.tabUrls.set(1, 'https://lottery.test/lottery');
+  fixture.session['learn:1'] = {
+    tabId: 1,
+    runId: 'learn-entry-only',
+    siteId: site.id,
+    accountId: 'draw-user',
+    kind: 'checkin',
+    createdAt: Date.now(),
+    events: [
+      {
+        type: 'click',
+        selector: '#lottery-navigation',
+        label: '抽奖',
+        href: 'https://lottery.test/lottery',
+        path: '/dashboard',
+        at: 1000,
+      },
+      { type: 'navigation', path: '/lottery', at: 1001 },
+    ],
+  };
+  const result = await fixture.services.learningService.toggle('draw-user', 'checkin');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /只打开了抽奖页面/);
+  assert.match(result.error, /点击礼盒或抽奖按钮/);
+  assert.equal(fixture.local.sites[0].checkin.method, 'auto');
+  assert.ok(fixture.session['learn:1']);
+});
+
+test('learning: quantity draw submits survive the login filter and only the last draw supplies replay proof', () => {
+  const fixture = browserFixture();
+  const { bgLearningState } = fixture.services;
+  for (const label of ['抽 1 次', '三连抽', 'Draw once']) {
+    const event = bgLearningState.Uf({
+      type: 'click',
+      selector: '#draw',
+      label,
+      path: '/lottery',
+      loginAction: 'submit',
+      at: 1000,
+    });
+    assert.equal(event.checkinAction, 'lottery');
+    assert.equal(bgLearningState.Yu(event), 'action');
+    assert.equal(bgLearningState.Jd([event]).length, 1);
+  }
+  const site = { loginUrl: 'https://lottery.test/login' };
+  const artifact = bgLearningState._f(site, [
+    {
+      type: 'click',
+      selector: '#first-draw',
+      label: '抽 1 次',
+      path: '/lottery',
+      evidence: { kind: 'success', words: ['Thanks for playing'], selector: '#first-result' },
+      at: 1000,
+    },
+    {
+      type: 'click',
+      selector: '#last-draw',
+      label: '抽 1 次',
+      path: '/lottery',
+      evidence: { kind: 'success', words: ['You won'], selector: '#last-result' },
+      at: 2000,
+    },
+    {
+      type: 'click',
+      selector: '#dismiss-result',
+      label: '知道了',
+      path: '/lottery',
+      at: 2100,
+    },
+  ]);
+  const serialized = JSON.stringify(artifact.workflow);
+  assert.ok(serialized.includes('#last-result >> text=You won'));
+  assert.equal(serialized.includes('#first-result >> text='), false);
+  assert.equal(serialized.includes('#dismiss-result'), false);
+});
+
 test('checkin: a learned site adapter user ID never becomes a new account identity', async () => {
   const fixture = browserFixture({
     sites: [
@@ -1491,6 +1777,244 @@ test('checkin: a learned site adapter user ID never becomes a new account identi
   assert.equal(task.accountIdentityUserId, undefined);
   assert.equal(task.site.adapter.userId, undefined);
   assert.equal(fixture.local.accounts[0].identity, undefined);
+});
+
+function identityLearningFixture({ identity, username = 'alice' } = {}) {
+  const fixture = browserFixture({
+    sites: [
+      {
+        id: 'identity-site',
+        name: 'Identity site',
+        loginUrl: 'https://identity.test/login',
+        loginMethod: 'form',
+        selectors: { username: '#username', password: '#password', submit: '#login' },
+        checkin: { method: 'none' },
+      },
+    ],
+    accounts: [
+      {
+        id: 'alice',
+        siteId: 'identity-site',
+        username,
+        password: 'alice-password',
+        label: 'My account label',
+        ...(identity ? { identity } : {}),
+      },
+      { id: 'bob', siteId: 'identity-site', username: 'bob', password: 'bob-password' },
+    ],
+  });
+  fixture.tabUrls.set(1, 'https://identity.test/member/preferences');
+  fixture.session['learn:1'] = {
+    tabId: 1,
+    runId: 'learn-identity',
+    siteId: 'identity-site',
+    accountId: 'alice',
+    kind: 'login',
+    createdAt: Date.now(),
+    events: [
+      {
+        type: 'fill',
+        selector: '#username',
+        fieldRole: 'username',
+        hasValue: true,
+        path: '/login',
+        at: 1,
+      },
+      {
+        type: 'fill',
+        selector: '#password',
+        fieldRole: 'password',
+        hasValue: true,
+        path: '/login',
+        at: 2,
+      },
+      {
+        type: 'click',
+        selector: '#login',
+        label: '登录',
+        loginAction: 'submit',
+        path: '/login',
+        at: 3,
+      },
+      { type: 'navigation', path: '/member/preferences', at: 4 },
+    ],
+  };
+  fixture.sender = { tab: { id: 1 }, frameId: 0, url: 'https://identity.test/member/preferences' };
+  fixture.recordIdentity = (observation) =>
+    fixture.services.learningService.recordIdentity(observation, fixture.sender, 'learn-identity');
+  return fixture;
+}
+
+test('learning: a selected field becomes a shared site rule and an independent first account binding', async () => {
+  const fixture = identityLearningFixture();
+  const source = {
+    pagePath: '/member/preferences',
+    pageFields: { userId: 'span[data-testid="current-user-id"]' },
+    pageFieldRules: { userId: { kind: 'text', prefix: 'ID: ' } },
+  };
+  const recorded = await fixture.recordIdentity({
+    path: source.pagePath,
+    stable: true,
+    selectedFields: ['userId'],
+    identitySource: source,
+    identity: { userId: 'member-alice', source: 'visible' },
+  });
+  assert.equal(recorded.ok, true, recorded.error);
+  const saved = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(saved.ok, true, saved.error);
+  assert.deepEqual(plain(fixture.local.sites[0].identitySource.pageFields), source.pageFields);
+  assert.deepEqual(
+    plain(fixture.local.sites[0].identitySource.pageFieldRules),
+    source.pageFieldRules,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(fixture.local.sites[0].identitySource),
+    /member-alice|alice-password/,
+  );
+  assert.equal(fixture.local.accounts[0].identity.userId, 'member-alice');
+  assert.equal(fixture.local.accounts[1].identity, undefined);
+  const started = await fixture.services.bgCheckinState.Ah('bob', async () => {});
+  assert.equal(started.ok, true, started.error);
+  const task = await fixture.services.bgCheckinState.V.get(started.tabId);
+  assert.deepEqual(plain(task.site.identitySource.pageFields), source.pageFields);
+  assert.equal(task.accountIdentityUserId, undefined);
+  assert.equal(fixture.local.accounts[1].identity, undefined);
+});
+
+test('learning: a demonstrated API source stores its endpoint and JSON path without transferring Alice to Bob', async () => {
+  const fixture = identityLearningFixture();
+  const observation = {
+    path: '/member/preferences',
+    stable: true,
+    identity: { userId: 'member-alice', username: 'alice', source: 'api' },
+    identitySource: {
+      endpoint: '/backend/whoami',
+      responseFields: { userId: 'result.user.uid', username: 'result.user.login' },
+    },
+  };
+  const unstabilized = await fixture.recordIdentity({ ...observation, stable: false });
+  assert.equal(unstabilized.ignored, true);
+  assert.equal(fixture.session['learn:1'].learnedIdentities, undefined);
+  assert.equal((await fixture.recordIdentity(observation)).ok, true);
+  const result = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(fixture.local.sites[0].identitySource.endpoint, '/backend/whoami');
+  assert.equal(fixture.local.sites[0].identitySource.responseFields.userId, 'result.user.uid');
+  assert.equal(fixture.local.accounts[0].identity.userId, 'member-alice');
+  assert.equal(fixture.local.accounts[1].identity, undefined);
+  assert.doesNotMatch(
+    JSON.stringify(fixture.local.sites[0].identitySource),
+    /member-alice|password/,
+  );
+});
+
+test('learning: API and selected page fields are saved together as a reusable fallback', async () => {
+  const fixture = identityLearningFixture();
+  await fixture.recordIdentity({
+    path: '/member/preferences',
+    stable: true,
+    selectedFields: ['userId'],
+    identity: { userId: 'member-alice', source: 'visible' },
+    identitySource: {
+      pagePath: '/member/preferences',
+      pageFields: { userId: '#profile-id' },
+      pageFieldRules: { userId: { kind: 'text', prefix: 'ID: ' } },
+    },
+  });
+  await fixture.recordIdentity({
+    path: '/member/preferences',
+    stable: true,
+    identity: { userId: 'member-alice', source: 'api' },
+    identitySource: { endpoint: '/api/user/self', responseFields: { userId: 'data.id' } },
+  });
+  const result = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(result.ok, true, result.error);
+  const source = fixture.local.sites[0].identitySource;
+  assert.equal(source.endpoint, '/api/user/self');
+  assert.equal(source.responseFields.userId, 'data.id');
+  assert.equal(source.pagePath, '/member/preferences');
+  assert.equal(source.pageFields.userId, '#profile-id');
+});
+
+test('learning: a picked unique name supports a site that has no numeric user ID', async () => {
+  const fixture = identityLearningFixture();
+  await fixture.recordIdentity({
+    path: '/member/preferences',
+    stable: true,
+    selectedFields: ['username'],
+    identity: { username: 'alice', source: 'visible' },
+    identitySource: {
+      pagePath: '/member/preferences',
+      pageFields: { username: '#current-login-name' },
+      pageFieldRules: { username: { kind: 'text' } },
+    },
+  });
+  const result = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(fixture.local.accounts[0].identity.username, 'alice');
+  assert.equal(fixture.local.accounts[0].identity.userId, undefined);
+  assert.equal(fixture.local.sites[0].identitySource.pageFields.username, '#current-login-name');
+  assert.ok(result.feature.learning.warnings.some((text) => text.includes('本站登录标识 alice')));
+});
+
+test('learning: a saved name-only binding still works after editing the account label', async () => {
+  const fixture = identityLearningFixture({
+    username: 'edited-account-label',
+    identity: { username: 'canonical-alice' },
+  });
+  await fixture.recordIdentity({
+    path: '/member/preferences',
+    stable: true,
+    selectedFields: ['username'],
+    identity: { username: 'canonical-alice', source: 'visible' },
+    identitySource: {
+      pagePath: '/member/preferences',
+      pageFields: { username: '#current-login-name' },
+      pageFieldRules: { username: { kind: 'text' } },
+    },
+  });
+  const result = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(fixture.local.accounts[0].identity.username, 'canonical-alice');
+  assert.equal(fixture.local.accounts[0].username, 'edited-account-label');
+});
+
+test('learning: a wrong current ID cannot rewrite the original binding or persist its chosen field', async () => {
+  const fixture = identityLearningFixture({ identity: { userId: 'original-alice' } });
+  await fixture.recordIdentity({
+    path: '/member/preferences',
+    stable: true,
+    selectedFields: ['userId'],
+    identity: { userId: 'other-member', source: 'visible' },
+    identitySource: {
+      pagePath: '/member/preferences',
+      pageFields: { userId: '#wrong-account-id' },
+      pageFieldRules: { userId: { kind: 'text' } },
+    },
+  });
+  const result = await fixture.services.learningService.toggle('alice', 'login');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /原有绑定不符/);
+  assert.equal(fixture.local.accounts[0].identity.userId, 'original-alice');
+  assert.equal(fixture.local.sites[0].identitySource, undefined);
+});
+
+test('learning: foreign identity endpoints and credential query URLs cannot become learned sources', async () => {
+  for (const endpoint of [
+    'https://foreign.test/api/user/self',
+    '/api/user/self?access_token=secret',
+  ]) {
+    const fixture = identityLearningFixture();
+    const result = await fixture.recordIdentity({
+      path: '/member/preferences',
+      stable: true,
+      identity: { userId: 'member-alice', source: 'api' },
+      identitySource: { endpoint, responseFields: { userId: 'data.id' } },
+    });
+    assert.equal(result.ignored, true);
+    assert.equal(fixture.session['learn:1'].learnedIdentities, undefined);
+    assert.equal(fixture.local.sites[0].identitySource, undefined);
+  }
 });
 
 test('accounts: batch saving trims names, rejects invalid rows and preserves existing passwords', async () => {

@@ -8,6 +8,8 @@ import { bgSliderState } from '../slider/service.js';
 import { bgSettingsState } from '../settings/service.js';
 import { bgPlatformState } from '../../shared/background-platform.js';
 import { bgEntryState } from '../../entries/background.js';
+import { readIdentitySource } from '../../shared/account-identity.js';
+import { withSiteIdentityRecipe } from '../../shared/site-login-recipes.js';
 
 export const bgCheckinState = { store: {} };
 
@@ -351,20 +353,8 @@ function ft(e) {
   return typeof e == `string` && e.trim() ? e.trim() : void 0;
 }
 
-function pt(e) {
-  let t = e.identitySource;
-  if (!t || typeof t != `object` || Array.isArray(t)) return null;
-  let n = t,
-    r = {
-      storageKey: ft(n.storageKey),
-      storageType: dt(n.storageType),
-      endpoint: ft(n.endpoint),
-      tokenKey: ft(n.tokenKey),
-      tokenStorageType: dt(n.tokenStorageType),
-      tokenHeader: ft(n.tokenHeader),
-      tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0,
-    };
-  return !r.storageKey && !r.endpoint ? null : r;
+function pt(site) {
+  return readIdentitySource(withSiteIdentityRecipe(site));
 }
 
 function mt(e, t) {
@@ -505,9 +495,14 @@ function Et(e) {
   }
   let r = pt(e);
   (r?.endpoint &&
+    !N(e, r.endpoint) &&
     !mt(e, r.endpoint) &&
     t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`),
-    r?.endpoint && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`),
+    r?.endpoint &&
+      !N(e, r.endpoint) &&
+      !r.tokenKey &&
+      t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`),
+    r?.pagePath && !N(e, r.pagePath) && t.push(`身份资料页必须与登录站点同源`),
     e.logoutApiUrl && !N(e, e.logoutApiUrl) && t.push(`退出接口必须与登录站点同源`));
   let i = e.authBootstrap?.endpoint?.trim();
   if (i) {
@@ -2135,7 +2130,7 @@ async function Ah(e, n) {
   let o = await bgPlatformState.t.get(bgPlatformState.r.sites, []),
     s = bgSitesState.Y(a.siteId, o);
   if (!s) return { ok: !1, error: `站点配置不存在` };
-  let d = s,
+  let d = withSiteIdentityRecipe(s),
     f = bgAccountsState.jt(a, d),
     p = bgAccountsState.Mt(f.loginMethod);
   if (!p) return { ok: !1, error: `本账号选择的登录方式无效，请重新选择` };
@@ -2163,18 +2158,14 @@ async function Ah(e, n) {
     _ =
       ![`github`, `oauth`, `passkey`, `manual`].includes(f.loginMethod) ||
       a.identity?.source === `api` ||
-      (f.loginMethod === `github` && a.identity?.verifiedByManagedLogin === !0)
+      a.identity?.verifiedByManagedLogin === !0 ||
+      a.identity?.verifiedByLearning === !0
         ? a.identity
         : void 0,
     v = a.identity?.userId
       ? g.find((e) => e.id !== a.id && e.identity?.userId === a.identity?.userId)
       : void 0,
-    y = v
-      ? void 0
-      : (_?.userId ??
-        (f.loginMethod !== `manual` && d.checkin?.method !== `workflow` && g.length === 1
-          ? d.adapter?.userId
-          : void 0)),
+    y = v ? void 0 : _?.userId,
     b =
       (!d.adapter && !y) || d.adapter?.userId === y
         ? d
@@ -2277,8 +2268,16 @@ async function Ah(e, n) {
       effectiveCheckinMethod: f.checkinMethod,
       usesExtensionProxy: !!S,
       ...(_?.userId ? { accountIdentityUserId: _.userId } : {}),
-      ...(_?.source === `api` && _.username ? { accountIdentityUsername: _.username } : {}),
-      ...(_?.source === `api` && _.email ? { accountIdentityEmail: _.email } : {}),
+      ...(_?.username ? { accountIdentityUsername: _.username } : {}),
+      ...(_?.email ? { accountIdentityEmail: _.email } : {}),
+      siteAccountIdentities: g
+        .filter((account) => account.id !== a.id)
+        .map((account) => ({
+          userId: account.identity?.userId,
+          username: account.identity?.username,
+          email: account.identity?.email,
+          label: account.label || account.username,
+        })),
       siteAccountCount: g.length,
       siteAccountUserIds: Object.fromEntries(
         g

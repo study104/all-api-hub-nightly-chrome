@@ -65,6 +65,7 @@ function element(tagName, attributes = {}, text = '') {
       return this.hidden ? { width: 0, height: 0 } : { width: 100, height: 24 };
     },
     parentElement: null,
+    previousElementSibling: null,
     nextElementSibling: null,
     getAttribute: (key) => attributesMap.get(key) ?? null,
     hasAttribute: (key) => attributesMap.has(key),
@@ -79,7 +80,7 @@ function element(tagName, attributes = {}, text = '') {
   };
 }
 
-function page({ text = '', fields = [], definitions = [] } = {}) {
+function page({ text = '', fields = [], definitions = [], cards = [], nodes = {} } = {}) {
   const labels = fields.map(({ label, control }) => {
     const labelNode = element('label', { for: control.id }, label);
     labelNode.control = control;
@@ -101,9 +102,30 @@ function page({ text = '', fields = [], definitions = [] } = {}) {
       if (selector === 'label') return labels;
       if (selector === 'dt') return terms;
       if (selector.startsWith('input[readonly]')) return controls;
+      if (selector === '.semi-tag') return cards.map((card) => card.tag);
+      if (nodes[selector]) return nodes[selector];
       return [];
     },
   };
+}
+
+function profileCard(id, username, { hidden = false, inTable = false, className = '' } = {}) {
+  const tag = element('div', { class: 'semi-tag', ...(hidden ? { hidden: '' } : {}) }, `ID: ${id}`);
+  const badges = element('div');
+  const name = element('div', {}, username);
+  const nameBlock = element('div');
+  const card = element('div', { class: className }, `${username}\n普通用户\nID: ${id}`);
+  const avatar = element('span', { class: 'semi-avatar', role: 'listitem' });
+  tag.parentElement = badges;
+  badges.previousElementSibling = name;
+  badges.parentElement = nameBlock;
+  name.parentElement = nameBlock;
+  nameBlock.parentElement = card;
+  avatar.parentElement = card;
+  tag.inTable = inTable;
+  card.inTable = inTable;
+  card.querySelector = (selector) => (selector.includes('.semi-avatar') ? avatar : null);
+  return { tag, card };
 }
 
 function field(label, id, value, attributes = {}) {
@@ -113,14 +135,21 @@ function field(label, id, value, attributes = {}) {
   };
 }
 
-function fixture({ local = {}, document = page(), pathname = '/profile', reply } = {}) {
+function fixture({
+  local = {},
+  session = {},
+  document = page(),
+  pathname = '/profile',
+  origin = 'https://site.test',
+  reply,
+} = {}) {
   const requests = [];
   const module = { exports: {} };
   const location = {
-    origin: 'https://site.test',
+    origin,
     pathname,
     hash: '',
-    href: `https://site.test${pathname}`,
+    href: `${origin}${pathname}`,
   };
   const getComputedStyle = (node) => ({
     display: node.hidden ? 'none' : 'block',
@@ -142,7 +171,7 @@ function fixture({ local = {}, document = page(), pathname = '/profile', reply }
     location,
     document,
     localStorage: storage(local),
-    sessionStorage: storage(),
+    sessionStorage: storage(session),
     chrome: { runtime: { id: 'test-extension' } },
     getComputedStyle,
     window: { getComputedStyle },
@@ -161,6 +190,7 @@ function fixture({ local = {}, document = page(), pathname = '/profile', reply }
         body: { success: false },
       };
       return {
+        status: response.status ?? 200,
         ok: (response.status ?? 200) >= 200 && (response.status ?? 200) < 300,
         redirected: response.redirected ?? false,
         url: response.url ?? url,
@@ -168,6 +198,7 @@ function fixture({ local = {}, document = page(), pathname = '/profile', reply }
           get: (name) => (name === 'content-type' ? (response.type ?? 'application/json') : null),
         },
         json: async () => response.body,
+        arrayBuffer: async () => Uint8Array.from(response.bytes ?? []).buffer,
       };
     },
   });
@@ -214,6 +245,60 @@ test('identity evidence: a real other-account API ID cannot be overridden by the
     'mismatch',
   );
   assert.deepEqual(runtime.requests[0].headers, { Accept: 'application/json' });
+});
+
+test('identity learning: a live page resource supplies a reusable current-user endpoint and JSON paths', async () => {
+  let currentUserId = 'member-alice';
+  const runtime = fixture({
+    reply: (request) =>
+      request.url.endsWith('/backend/whoami')
+        ? { body: { result: { current_user: { id: currentUserId, login: 'alice' } } } }
+        : { status: 404, body: { success: false } },
+  });
+  runtime.site.adapter = {};
+  runtime.context.performance = {
+    getEntriesByType: () => [
+      { name: 'https://foreign.test/api/user/self' },
+      { name: 'https://site.test/backend/whoami' },
+    ],
+  };
+  const first = await runtime.api.readIdentity(runtime.site, undefined, {
+    discover: true,
+    serverOnly: true,
+  });
+  assert.equal(first.userId, 'member-alice');
+  assert.deepEqual(plain(first.identitySource), {
+    endpoint: '/backend/whoami',
+    responseFields: { userId: 'result.current_user.id', username: 'result.current_user.login' },
+  });
+  assert.equal(runtime.requests[0].credentials, 'include');
+  assert.equal(runtime.requests[0].method, 'GET');
+  currentUserId = 'member-bob';
+  const second = await runtime.api.readIdentity(runtime.site, undefined, {
+    discover: true,
+    serverOnly: true,
+  });
+  assert.equal(second.userId, 'member-bob');
+  assert.equal(runtime.requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(second.identitySource), /member-alice|member-bob/);
+});
+
+test('identity learning: a configured page token location authenticates the live user without Cookie mixing', async () => {
+  const runtime = fixture({
+    local: { dashboard_bearer: 'current-page-token-value' },
+    reply: (request) =>
+      request.headers.Authorization
+        ? { body: { data: { id: 'member-alice', username: 'alice' } } }
+        : { status: 401, body: { success: false } },
+  });
+  runtime.site.adapter = {};
+  runtime.site.identitySource = { endpoint: '/api/user/self', tokenKey: 'dashboard_bearer' };
+  const current = await runtime.api.readIdentity(runtime.site, undefined, { discover: true });
+  assert.equal(current.userId, 'member-alice');
+  const tokenRequest = runtime.requests.find((request) => request.headers.Authorization);
+  assert.equal(tokenRequest.credentials, 'omit');
+  assert.equal(tokenRequest.headers.Authorization, 'Bearer current-page-token-value');
+  assert.doesNotMatch(JSON.stringify(current.identitySource), /current-page-token-value/);
 });
 
 test('identity evidence: saved adapter and storage IDs alone never confirm a browser session', async () => {
@@ -449,6 +534,234 @@ test('identity evidence: editable login names and duplicate visible IDs are not 
   assert.ok(text.api.readPageIdentity().identityConflict);
 });
 
+test('shared identity: Agent Router personal card exposes its plain ID when APIs return challenge HTML', async () => {
+  const runtime = fixture({
+    pathname: '/console/personal',
+    local: { user: JSON.stringify({ id: 300, username: 'old-account' }) },
+    document: page({ cards: [profileCard('299', 'github_3306')] }),
+    reply: () => ({ type: 'text/html', body: '<h1>访问验证</h1>' }),
+  });
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, '299');
+  assert.equal(identity.username, 'github_3306');
+  assert.equal(identity.source, 'visible');
+  assert.equal(identity.evidence, 'profile-card');
+  assert.equal(
+    runtime.api.compareIdentity(identity, '3306@example.test', '299', {}).match,
+    'confirmed',
+  );
+});
+
+test('shared identity: API identity remains authoritative over a cached personal card', async () => {
+  const runtime = fixture({
+    pathname: '/console/personal',
+    document: page({ cards: [profileCard('299', 'github_3306')] }),
+    reply: () => ({ body: { data: { id: 300, username: 'other-account' } } }),
+  });
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, '300');
+  assert.equal(identity.source, 'api');
+  assert.equal(
+    runtime.api.compareIdentity(identity, '3306@example.test', '299', {}).match,
+    'mismatch',
+  );
+});
+
+test('shared identity: bare IDs outside a profile and hidden, list or invitation cards are ignored', () => {
+  const unrelated = fixture({
+    pathname: '/console',
+    document: page({ cards: [profileCard('299', 'some-user')] }),
+  });
+  assert.equal(unrelated.api.readPageIdentity(), null);
+  const profile = fixture({
+    pathname: '/console/personal',
+    document: page({
+      cards: [
+        profileCard('299', 'current-user'),
+        profileCard('998', 'hidden-user', { hidden: true }),
+        profileCard('997', 'listed-user', { inTable: true }),
+        profileCard('996', 'invited-user', { className: 'invitation' }),
+      ],
+    }),
+  });
+  assert.equal(profile.api.readPageIdentity().userId, '299');
+});
+
+test('shared identity: inconsistent current-user cards stop with conflicting IDs', () => {
+  const runtime = fixture({
+    pathname: '/console/personal',
+    document: page({ cards: [profileCard('299', 'first'), profileCard('300', 'second')] }),
+  });
+  assert.match(runtime.api.readPageIdentity().identityConflict, /299.*300/);
+});
+
+test('shared identity: new unsupported sites use the same current-user probes', async () => {
+  const runtime = fixture({
+    reply: (request) =>
+      new URL(request.url).pathname === '/api/user/self'
+        ? { body: { data: { id: 'uuid-299', username: 'new-user' } } }
+        : { status: 404 },
+  });
+  runtime.site.adapter = { family: 'unsupported', siteType: 'unknown' };
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, 'uuid-299');
+  assert.equal(runtime.api.compareIdentity(identity, 'new-user', 'uuid-299').match, 'confirmed');
+});
+
+test('shared identity: custom API fields provide a name-only site identity', async () => {
+  const runtime = fixture({
+    reply: (request) =>
+      new URL(request.url).pathname === '/whoami'
+        ? { body: { result: { principal: { screen_name: 'unique-user' } } } }
+        : { status: 404 },
+  });
+  runtime.site.identitySource = {
+    endpoint: '/whoami',
+    responseFields: { username: 'result.principal.screen_name' },
+  };
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, undefined);
+  assert.equal(identity.username, 'unique-user');
+  assert.equal(runtime.api.compareIdentity(identity, 'unique-user').match, 'confirmed');
+  assert.equal(new URL(runtime.requests[0].url).pathname, '/whoami');
+  assert.equal(runtime.requests[0].credentials, 'include');
+});
+
+test('shared identity: name and nickname fields cannot become a unique login name without a mapping', async () => {
+  const runtime = fixture({
+    reply: () => ({ body: { data: { name: 'Alice', email: 'someone@example.test' } } }),
+  });
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.username, undefined);
+  assert.equal(identity.displayName, 'Alice');
+  assert.notEqual(runtime.api.compareIdentity(identity, 'Alice').match, 'confirmed');
+});
+
+test('shared identity: explicit user ID mapping separates user and tenant identifiers', async () => {
+  const runtime = fixture({
+    reply: () => ({
+      body: { data: { user_id: '299', account_id: '900', username: 'alice' } },
+    }),
+  });
+  runtime.site.identitySource = {
+    endpoint: '/api/user/self',
+    responseFields: { userId: 'data.user_id' },
+  };
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, '299');
+  assert.equal(identity.identityConflict, undefined);
+});
+
+test('shared identity: configured visible identity fields work on unfamiliar profile routes', async () => {
+  const name = element('span', {}, 'unique-user');
+  const id = element('span', { 'data-user-id': 'uuid-299' });
+  const runtime = fixture({
+    pathname: '/member/preferences',
+    document: page({ nodes: { '#member-name': [name], '#member-id': [id] } }),
+  });
+  runtime.site.identitySource = {
+    pagePath: '/member/preferences',
+    pageFields: { userId: '#member-id', username: '#member-name' },
+  };
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity.userId, 'uuid-299');
+  assert.equal(identity.username, 'unique-user');
+  assert.equal(identity.evidence, 'structured-fields');
+});
+
+test('shared identity: only exact login names or complete emails confirm name-only accounts', () => {
+  const runtime = fixture();
+  for (const identity of [
+    { username: 'alice@example.test', source: 'api' },
+    { email: 'alice@example.test', source: 'visible' },
+  ]) {
+    assert.equal(runtime.api.compareIdentity(identity, 'alice@example.test').match, 'confirmed');
+  }
+  for (const identity of [
+    { username: 'alice', source: 'api' },
+    { displayName: 'alice@example.test', source: 'api' },
+    { email: 'ali***@example.test', source: 'visible' },
+    { username: 'alice@example.test', source: 'storage' },
+  ]) {
+    assert.notEqual(runtime.api.compareIdentity(identity, 'alice@example.test').match, 'confirmed');
+  }
+  assert.equal(
+    runtime.api.compareIdentity(
+      { username: 'site-user', source: 'api' },
+      'account note',
+      undefined,
+      {
+        expectedIdentity: { username: 'site-user' },
+      },
+    ).match,
+    'confirmed',
+  );
+});
+
+test('shared identity: another saved name-only account cannot supply this account identity', () => {
+  const runtime = fixture();
+  assert.equal(
+    runtime.api.compareIdentity({ username: 'alice', source: 'api' }, 'alice', undefined, {
+      knownIdentities: [{ username: 'ALICE', label: 'other account' }],
+    }).match,
+    'mismatch',
+  );
+});
+
+test('shared identity: a saved site login name remains authoritative over a changed account label', () => {
+  const runtime = fixture();
+  assert.equal(
+    runtime.api.compareIdentity({ username: 'new-label', source: 'api' }, 'new-label', undefined, {
+      expectedIdentity: { username: 'original-user' },
+    }).match,
+    'mismatch',
+  );
+  assert.equal(
+    runtime.api.compareIdentity(
+      { email: 'new-label@example.test', source: 'api' },
+      'new-label@example.test',
+      undefined,
+      {
+        expectedIdentity: { username: 'original-user' },
+      },
+    ).match,
+    'unknown',
+  );
+});
+
+test('shared identity: failure diagnostics identify endpoint and response type without credentials', async () => {
+  const diagnostics = [];
+  const runtime = fixture({
+    reply: () => ({ type: 'text/html', body: '<h1>访问验证</h1>' }),
+  });
+  runtime.site.tokenConfig = {
+    storageKey: 'token',
+    identityEndpoint: '/api/user/self?access_token=private-query-token',
+  };
+  assert.equal(
+    await runtime.api.readIdentity(runtime.site, 'private-header-token', { diagnostics }),
+    null,
+  );
+  assert.match(diagnostics.join('\n'), /身份接口 \/api\/user\/self.*HTML/);
+  assert.doesNotMatch(diagnostics.join('\n'), /private-query-token|private-header-token/);
+});
+
+test('shared identity: even a single unbound account requires actual identity evidence', () => {
+  const runtime = fixture();
+  for (const loginMethod of ['form', 'github', 'auto', 'manual']) {
+    assert.notEqual(
+      runtime.scope.Qp({
+        loginMethod,
+        verdict: 'unknown',
+        siteAccountCount: 1,
+        checkinPageAvailable: false,
+        canSwitchAccount: false,
+      }).action,
+      'proceed',
+    );
+  }
+});
+
 test('identity evidence: having one account cannot replace confirmation of its bound ID', () => {
   const runtime = fixture();
   const options = {
@@ -581,14 +894,19 @@ test('identity performance: credential query URLs are always rebuilt and never r
 });
 
 test('login performance: visible login forms and established sessions do not wait two seconds', async () => {
-  const runtime = fixture();
+  const runtime = fixture({
+    document: page({
+      nodes: { 'button, a, [role="button"]': [element('button', {}, '退出登录')] },
+    }),
+  });
   const waits = [];
   runtime.scope.w = async (ms) => waits.push(ms);
+  runtime.scope.Nu = () => null;
   runtime.scope.nr = () => null;
   runtime.scope.On = () => false;
-  runtime.scope.ar = () => true;
   assert.equal(await runtime.scope.br(runtime.site, [], 6000), true);
-  runtime.scope.ar = () => false;
+  runtime.context.location.pathname = '/login';
+  runtime.context.location.href = 'https://site.test/login';
   runtime.scope.On = () => true;
   assert.equal(await runtime.scope.br(runtime.site, [], 6000), false);
   assert.deepEqual(waits, []);
@@ -605,9 +923,14 @@ test('login performance: a loading page still waits for actual login evidence', 
   runtime.scope.w = async (ms) => {
     now += ms;
   };
+  runtime.scope.Nu = () => null;
   runtime.scope.nr = () => null;
   runtime.scope.On = () => false;
-  runtime.scope.ar = () => now >= 600;
+  runtime.context.document.querySelectorAll = (selector) =>
+    selector === 'button, a, [role="button"]' && now >= 600
+      ? [element('button', {}, '退出登录')]
+      : [];
+  runtime.scope.qi = async () => null;
   assert.equal(await runtime.scope.br(runtime.site, [], 6000), true);
   assert.equal(now, 600);
 });
@@ -976,3 +1299,399 @@ for (const scenario of [
     assert.equal(handled, scenario === 'logout-with-challenge' ? 1 : 0);
   });
 }
+
+const orevxCborUser = [
+  0xa1,
+  0x64,
+  ...Buffer.from('data'),
+  0xa2,
+  0x62,
+  ...Buffer.from('id'),
+  0x19,
+  0x01,
+  0x2b,
+  0x68,
+  ...Buffer.from('username'),
+  0x68,
+  ...Buffer.from('googkang'),
+];
+
+function orevxFixture({
+  sessionOnly = false,
+  cbor = false,
+  userId = 299,
+  status = 200,
+  type = 'application/json',
+  responseBody,
+} = {}) {
+  const token = 'orevx-test-session-token';
+  const runtime = appearanceFixture({
+    origin: 'https://orevx.ai',
+    pathname: '/user/checkins',
+    local: {
+      'auth-user': JSON.stringify({ id: 300, username: 'stale-other-account' }),
+      ...(sessionOnly ? {} : { 'auth-token': token }),
+      'api-key': 'api-key-is-not-the-dashboard-session',
+    },
+    session: sessionOnly ? { 'auth-token': token } : {},
+    reply: () => ({
+      status,
+      ...(cbor
+        ? { type: 'application/cbor', bytes: orevxCborUser }
+        : {
+            type,
+            body:
+              responseBody === undefined
+                ? { data: { id: userId, username: 'googkang' } }
+                : responseBody,
+          }),
+    }),
+  });
+  runtime.site = {
+    id: 'orevx',
+    name: 'Orevx Engine',
+    loginUrl: 'https://orevx.ai/user/checkins',
+    selectors: {},
+    checkin: { method: 'auto' },
+  };
+  runtime.scope.On = () => false;
+  runtime.scope.An = () => false;
+  runtime.scope.nr = () => null;
+  runtime.scope.U = async () => {};
+  runtime.scope.Lu = async () => ({ resolved: true, detected: false });
+  return runtime;
+}
+
+for (const [label, options] of [
+  ['persistent JSON login', {}],
+  ['session-only JSON login', { sessionOnly: true }],
+  ['CBOR login', { cbor: true }],
+]) {
+  test(`Orevx login: ${label} reads the real current-user endpoint with the current session token`, async () => {
+    const runtime = orevxFixture(options);
+    const state = await runtime.api.readLoginState(runtime.site);
+    assert.equal(state.status, 'authenticated');
+    assert.equal(state.reason, 'stable_api_identity');
+    assert.equal(state.identity.userId, '299');
+    assert.equal(state.identity.username, 'googkang');
+    assert.equal(runtime.requests.length, 2);
+    assert.equal(runtime.now(), 300);
+    for (const request of runtime.requests) {
+      assert.equal(request.url, 'https://server.orevx.ai/api/user/me');
+      assert.equal(request.headers.Authorization, 'Bearer orevx-test-session-token');
+      assert.equal(request.credentials, 'omit');
+      assert.equal(request.method, 'GET');
+      assert.equal(request.cache, 'no-store');
+      assert.equal(request.redirect, 'error');
+      assert.equal(request.headers['New-Api-User'], undefined);
+    }
+    assert.equal(runtime.site.identitySource, undefined);
+  });
+}
+
+test('Orevx login: expired tokens and stale auth-user storage cannot confirm a session', async () => {
+  const runtime = orevxFixture({ status: 401 });
+  const state = await runtime.api.readLoginState(runtime.site, { timeoutMs: 600 });
+  assert.equal(state.status, 'pending');
+  assert.equal(state.reason, 'session_probe_rejected');
+  assert.equal(state.identity, undefined);
+  assert.equal(
+    runtime.requests.every(
+      (request) => request.headers.Authorization === 'Bearer orevx-test-session-token',
+    ),
+    true,
+  );
+});
+
+test('Orevx login: failure diagnostics distinguish expired sessions, HTML and absent tokens without logging secrets', async () => {
+  for (const [options, expected, reason] of [
+    [{ status: 401 }, /HTTP 401/, 'session_probe_rejected'],
+    [{ status: 403 }, /HTTP 403/, 'session_probe_rejected'],
+    [{ type: 'text/html' }, /返回 HTML/, 'identity_api_unavailable'],
+    [{ removeToken: true }, /没有可用的会话 Token.*auth-token/, 'session_token_missing'],
+    [{ responseBody: {} }, /未返回有效的当前用户字段/, 'identity_response_unusable'],
+    [{ responseBody: null }, /用户资料解析失败/, 'identity_response_unusable'],
+  ]) {
+    const runtime = orevxFixture(options);
+    if (options.removeToken) runtime.context.localStorage.removeItem('auth-token');
+    const diagnostics = [];
+    const state = await runtime.api.readLoginState(runtime.site, {
+      timeoutMs: 600,
+      diagnostics,
+    });
+    assert.equal(state.status, 'pending');
+    assert.equal(state.reason, reason);
+    assert.ok(diagnostics.some((message) => expected.test(message)));
+    assert.equal(
+      diagnostics.some((message) => /orevx-test-session-token|api-key-is-not/.test(message)),
+      false,
+    );
+  }
+});
+
+test('Orevx login: validated defaults preserve site configuration and never match a lookalike origin', async () => {
+  const runtime = orevxFixture();
+  assert.equal(runtime.scope.Mr(runtime.site).pagePath, '/user/profile');
+  for (const loginUrl of [
+    'https://orevx.ai.evil.test/user/checkins',
+    'https://orevx.ai:8443/user/checkins',
+    'http://orevx.ai/user/checkins',
+  ])
+    assert.equal(runtime.scope.Mr({ ...runtime.site, loginUrl }), null);
+  const identitySource = {
+    endpoint: 'https://server.orevx.ai/custom/current-user',
+    tokenKey: 'custom-session-key',
+    responseFields: { userId: 'data.account_id' },
+  };
+  const configured = { ...runtime.site, identitySource };
+  assert.equal(runtime.scope.Mr(configured).endpoint, identitySource.endpoint);
+  assert.equal(runtime.scope.Mr(configured).tokenKey, identitySource.tokenKey);
+  assert.equal(configured.identitySource, identitySource);
+  runtime.context.location.origin = 'https://accounts.google.com';
+  runtime.context.location.href = 'https://accounts.google.com/signin';
+  runtime.context.location.pathname = '/signin';
+  const identity = await runtime.api.readIdentity(runtime.site);
+  assert.equal(identity, null);
+  assert.equal(runtime.requests.length, 0);
+});
+
+test('Orevx login: account token changes are read again rather than reusing the previous session', async () => {
+  const runtime = orevxFixture();
+  await runtime.api.readIdentity(runtime.site);
+  runtime.context.localStorage.setItem('auth-token', 'new-orevx-test-session-token');
+  await runtime.api.readIdentity(runtime.site);
+  assert.equal(runtime.requests.length, 2);
+  assert.equal(runtime.requests[0].headers.Authorization, 'Bearer orevx-test-session-token');
+  assert.equal(runtime.requests[1].headers.Authorization, 'Bearer new-orevx-test-session-token');
+});
+
+test('Orevx login: an incomplete stale local token does not hide the active sessionStorage auth bundle', async () => {
+  const runtime = orevxFixture();
+  runtime.context.sessionStorage.setItem('auth-token', 'active-session-test-token');
+  runtime.context.sessionStorage.setItem('auth-session-id', 'active-session-test-id');
+  runtime.context.sessionStorage.setItem(
+    'auth-user',
+    JSON.stringify({ id: 299, username: 'googkang' }),
+  );
+  const state = await runtime.api.readLoginState(runtime.site);
+  assert.equal(state.status, 'authenticated');
+  assert.equal(state.reason, 'stable_api_identity');
+  assert.equal(state.identity.userId, '299');
+  assert.equal(runtime.requests.length, 2);
+  assert.equal(
+    runtime.requests.every(
+      (request) => request.headers.Authorization === 'Bearer active-session-test-token',
+    ),
+    true,
+  );
+  assert.equal(runtime.scope.Ti('auth-token', 'localStorage'), 'orevx-test-session-token');
+});
+
+test('Orevx login: bundle selection matches frontend restore validation and never supplies identity from storage', async () => {
+  for (const storedUser of [null, { id: 0 }, { id: '300' }, { id: 3.5 }, { id: -1 }]) {
+    const runtime = orevxFixture();
+    runtime.context.localStorage.setItem('auth-session-id', 'stale-local-session-test-id');
+    runtime.context.localStorage.setItem('auth-user', JSON.stringify(storedUser));
+    runtime.context.sessionStorage.setItem('auth-token', 'active-session-test-token');
+    runtime.context.sessionStorage.setItem('auth-session-id', 'active-session-test-id');
+    runtime.context.sessionStorage.setItem(
+      'auth-user',
+      JSON.stringify({ id: 123456, username: 'stale-storage-name' }),
+    );
+    const identity = await runtime.api.readIdentity(runtime.site);
+    assert.equal(identity.source, 'api');
+    assert.equal(identity.userId, '299');
+    assert.equal(identity.username, 'googkang');
+    assert.equal(runtime.requests[0].headers.Authorization, 'Bearer active-session-test-token');
+    assert.equal(runtime.requests[0].headers['New-Api-User'], undefined);
+  }
+});
+
+test('Orevx login: complete local bundles keep restore order and explicit storage choices remain exact', async () => {
+  const runtime = orevxFixture();
+  runtime.context.localStorage.setItem('auth-session-id', 'local-session-test-id');
+  runtime.context.sessionStorage.setItem('auth-token', 'session-test-token');
+  runtime.context.sessionStorage.setItem('auth-session-id', 'session-test-id');
+  runtime.context.sessionStorage.setItem('auth-user', JSON.stringify({ id: 299 }));
+  assert.equal(runtime.scope.Ti('auth-token'), 'orevx-test-session-token');
+  assert.equal(runtime.scope.Ti('auth-token', 'sessionStorage'), 'session-test-token');
+  runtime.context.location.origin = 'https://orevx.ai.evil.test';
+  runtime.context.localStorage.removeItem('auth-session-id');
+  assert.equal(runtime.scope.Ti('auth-token'), 'orevx-test-session-token');
+});
+
+test('Orevx login: OAuth completing in the opener does not wait for a nonexistent navigation', async () => {
+  const runtime = orevxFixture();
+  const navigated = await runtime.scope.yr(runtime.site, [], 10000);
+  assert.equal(navigated, false);
+  assert.equal(runtime.now(), 300);
+  assert.equal(runtime.requests.length, 2);
+});
+
+for (const [boundId, expectedCheckins] of [
+  ['299', 1],
+  ['300', 0],
+]) {
+  test(`Orevx login: real OAuth verification preserves the target-account gate for bound ID ${boundId}`, async () => {
+    const runtime = orevxFixture();
+    let checkins = 0;
+    const handoffs = [];
+    const saved = [];
+    runtime.scope.Nf = async () => {
+      checkins += 1;
+      return { status: 'already', message: '已核验账号并确认今日已签到' };
+    };
+    const outcome = await runtime.api.runTask(
+      {
+        accountId: 'orevx-account',
+        username: 'googkang',
+        accountIdentityUserId: boundId,
+        siteAccountCount: 2,
+        siteAccountUserIds: {},
+        effectiveLoginMethod: 'oauth',
+        stage: 'verify-oauth',
+        site: runtime.site,
+        steps: [],
+      },
+      {
+        async confirmIdentity() {},
+        async saveIdentity(identity) {
+          saved.push(plain(identity));
+        },
+        async markStage() {},
+        async needsUser(message) {
+          handoffs.push(message);
+        },
+        async navigate() {
+          assert.fail('These OAuth-return fixtures remain on their existing site page');
+        },
+      },
+    );
+    assert.equal(checkins, expectedCheckins);
+    if (expectedCheckins) assert.equal(outcome?.ok, true, outcome?.message);
+    else {
+      assert.equal(saved.length, 0);
+      assert.ok(handoffs.some((message) => /账号|身份|299|300/.test(message)));
+    }
+  });
+}
+
+for (const initialStage of ['login', 'verify']) {
+  test(`login success: a learned workflow in ${initialStage} obtains profile evidence through a read-only handoff before confirming login`, async () => {
+    const runtime = appearanceFixture({ pathname: '/dashboard' });
+    runtime.site = {
+      ...runtime.site,
+      selectors: {},
+      checkin: {
+        method: 'workflow',
+        workflow: { route: ['/profile', '/checkins'], identityPath: '/profile', steps: [] },
+      },
+    };
+    runtime.scope.On = () => false;
+    runtime.scope.An = () => false;
+    runtime.scope.nr = () => null;
+    runtime.scope.U = async () => {};
+    runtime.scope.Lu = async () => ({ resolved: true, detected: false });
+    let checkins = 0;
+    const navigations = [];
+    const saved = [];
+    runtime.scope.Nf = async () => {
+      checkins += 1;
+      return { status: 'already', message: '已核验资料页账号' };
+    };
+    const callbacks = {
+      async confirmIdentity() {},
+      async saveIdentity(identity) {
+        saved.push(plain(identity));
+      },
+      async markStage() {},
+      async needsUser(message) {
+        assert.fail(message);
+      },
+      async navigate(url, steps, stage) {
+        navigations.push({ url, stage, steps: [...steps] });
+      },
+    };
+    const task = {
+      accountId: 'profile-account',
+      username: '3306',
+      accountIdentityUserId: '299',
+      formCredentialsSubmitted: initialStage === 'verify',
+      siteAccountCount: 2,
+      siteAccountUserIds: {},
+      effectiveLoginMethod: 'form',
+      stage: initialStage,
+      site: runtime.site,
+      steps: [],
+    };
+    const pending = await runtime.api.runTask(task, callbacks);
+    assert.equal(pending, null);
+    assert.equal(checkins, 0);
+    assert.equal(saved.length, 0);
+    assert.equal(navigations.length, 1);
+    assert.equal(navigations[0].url, 'https://site.test/profile');
+    assert.equal(navigations[0].stage, initialStage);
+    assert.equal(
+      navigations[0].steps.some((step) => /登录结果已确认|OAuth 授权完成/.test(step)),
+      false,
+    );
+    runtime.context.location.pathname = '/profile';
+    runtime.context.location.href = 'https://site.test/profile';
+    runtime.context.document = page({ cards: [profileCard('299', '3306')] });
+    const outcome = await runtime.api.runTask(
+      { ...task, stage: navigations[0].stage, steps: navigations[0].steps },
+      callbacks,
+    );
+    assert.equal(outcome?.ok, true, outcome?.message);
+    assert.equal(checkins, 1);
+    assert.equal(navigations.length, 1);
+  });
+}
+
+test('login success: an unanswered OAuth opener never navigates away merely because a profile route is saved', async () => {
+  const runtime = appearanceFixture({ pathname: '/login' });
+  runtime.site = {
+    ...runtime.site,
+    selectors: {},
+    checkin: {
+      method: 'workflow',
+      workflow: { route: ['/profile', '/checkins'], identityPath: '/profile', steps: [] },
+    },
+  };
+  runtime.scope.On = () => false;
+  runtime.scope.An = () => false;
+  runtime.scope.nr = () => null;
+  runtime.scope.U = async () => {};
+  runtime.scope.Lu = async () => ({ resolved: true, detected: false });
+  let navigations = 0;
+  let checkins = 0;
+  runtime.scope.Nf = async () => {
+    checkins += 1;
+    return { status: 'already', message: 'must not be reached' };
+  };
+  const outcome = await runtime.api.runTask(
+    {
+      accountId: 'oauth-account',
+      username: '3306',
+      accountIdentityUserId: '299',
+      siteAccountCount: 2,
+      siteAccountUserIds: {},
+      effectiveLoginMethod: 'oauth',
+      stage: 'verify-oauth',
+      site: runtime.site,
+      steps: [],
+    },
+    {
+      async markStage() {},
+      async needsUser(message) {
+        assert.fail(message);
+      },
+      async navigate() {
+        navigations += 1;
+      },
+    },
+  );
+  assert.equal(outcome?.ok, false);
+  assert.equal(navigations, 0);
+  assert.equal(checkins, 0);
+});

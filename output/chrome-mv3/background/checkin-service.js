@@ -5312,6 +5312,313 @@
     handleMutation: handleProxiesMutation
   });
 
+  // src/shared/account-identity.js
+  function readIdentitySource(site) {
+    const source = site.identitySource;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    const text = (value) => typeof value === "string" && value.trim() ? value.trim() : void 0;
+    const storageType = (value) => value === "localStorage" || value === "sessionStorage" ? value : void 0;
+    const fields = (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+      const result2 = {};
+      for (const field of ["userId", "username", "email", "displayName"]) {
+        const selector = text(value[field]);
+        if (selector && selector.length <= 500) result2[field] = selector;
+      }
+      return Object.keys(result2).length ? result2 : void 0;
+    };
+    const result = {
+      storageKey: text(source.storageKey),
+      storageType: storageType(source.storageType),
+      endpoint: text(source.endpoint),
+      pagePath: text(source.pagePath),
+      pageFields: fields(source.pageFields),
+      pageFieldRules: readIdentityFieldRules(source.pageFieldRules),
+      responseFields: fields(source.responseFields),
+      tokenKey: text(source.tokenKey),
+      tokenStorageType: storageType(source.tokenStorageType),
+      tokenHeader: text(source.tokenHeader),
+      tokenPrefix: typeof source.tokenPrefix === "string" ? source.tokenPrefix : void 0
+    };
+    return result.storageKey || result.endpoint || result.pagePath || result.pageFields || result.responseFields ? result : null;
+  }
+  function readIdentityFieldRules(rules) {
+    if (!rules || typeof rules !== "object" || Array.isArray(rules)) return void 0;
+    const result = {};
+    for (const field of ["userId", "username", "email", "displayName"]) {
+      const rule = rules[field];
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+      if (!["text", "value", "attribute"].includes(rule.kind)) continue;
+      if (rule.kind === "attribute" && !/^data-(?:user-id|uid|username|user-name|email)$/.test(rule.attribute ?? ""))
+        continue;
+      if (["prefix", "suffix"].some(
+        (key) => rule[key] != null && (typeof rule[key] !== "string" || rule[key].length > 80)
+      ))
+        continue;
+      if (rule.stopAt != null && (field !== "userId" || ![",", "，", ";", "；"].includes(rule.stopAt)))
+        continue;
+      result[field] = {
+        kind: rule.kind,
+        ...rule.kind === "attribute" ? { attribute: rule.attribute } : {},
+        ...rule.prefix ? { prefix: rule.prefix } : {},
+        ...rule.suffix ? { suffix: rule.suffix } : {},
+        ...rule.stopAt ? { stopAt: rule.stopAt } : {}
+      };
+    }
+    return Object.keys(result).length ? result : void 0;
+  }
+  function identitySourceLabel(source) {
+    return source === "api" ? "站点接口" : source === "storage" ? "本地登录态" : source === "visible" ? "页面文本" : "未知来源";
+  }
+  function identitiesEqual(first, second) {
+    return typeof first === "string" && typeof second === "string" && !!first.trim() && first.trim().toLowerCase() === second.trim().toLowerCase();
+  }
+  function parseIdentityResponse(response, fieldPaths) {
+    const record = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+    const successful = (value) => {
+      if (value.success === false || value.ok === false || value.status === false) return false;
+      if (/^(?:error|failed|failure|unauthorized|forbidden)$/i.test(String(value.status ?? "")))
+        return false;
+      return value.code == null || /^(?:0|200|success|ok)$/i.test(String(value.code).trim());
+    };
+    const scalar = (value) => {
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    };
+    const identifier = (value) => {
+      if (typeof value === "number")
+        return Number.isSafeInteger(value) && value >= 0 ? String(value) : void 0;
+      if (typeof value === "string" && /^[\w.:-]{1,128}$/.test(value.trim())) return value.trim();
+    };
+    const containers = [
+      "user",
+      "current_user",
+      "currentUser",
+      "user_info",
+      "userInfo",
+      "profile",
+      "identity",
+      "account",
+      "current_account",
+      "currentAccount",
+      "me"
+    ];
+    const candidates = [];
+    const conflictingIds = /* @__PURE__ */ new Set();
+    const seen = /* @__PURE__ */ new Set();
+    function collect(value, depth = 0) {
+      if (!record(value) || depth > 4 || seen.has(value) || !successful(value)) return;
+      seen.add(value);
+      const envelopes = ["data", "result"].filter((key) => record(value[key]));
+      if (Object.prototype.hasOwnProperty.call(value, "data") || envelopes.length) {
+        for (const key of envelopes) collect(value[key], depth + 1);
+        for (const key of containers) if (record(value[key])) collect(value[key], depth + 1);
+        return;
+      }
+      const nested = containers.filter((key) => record(value[key]));
+      const ids2 = new Set(
+        [value.id, value.user_id, value.userId, value.uid, value.account_id, value.accountId].map(identifier).filter(Boolean)
+      );
+      if (ids2.size > 1) for (const id of ids2) conflictingIds.add(id);
+      const identity = {
+        userId: ids2.size === 1 ? [...ids2][0] : void 0,
+        username: scalar(value.username) ?? scalar(value.user_name) ?? scalar(value.login) ?? scalar(value.handle),
+        email: scalar(value.email),
+        displayName: scalar(value.display_name) ?? scalar(value.displayName) ?? scalar(value.nickname) ?? scalar(value.name)
+      };
+      if (identity.userId || identity.username || identity.email) {
+        if (!nested.length || identity.username || identity.email || identity.displayName)
+          candidates.push(identity);
+      }
+      for (const key of nested) collect(value[key], depth + 1);
+    }
+    collect(response);
+    if (record(response) && successful(response) && record(fieldPaths)) {
+      const mapped = {};
+      const mappedFields = /* @__PURE__ */ new Set();
+      for (const field of ["userId", "username", "email", "displayName"]) {
+        const path = fieldPaths[field];
+        if (typeof path !== "string" || !/^[\w-]+(?:\.[\w-]+)*$/.test(path)) continue;
+        mappedFields.add(field);
+        let value = response;
+        for (const key of path.split(".")) {
+          if (!record(value) || !successful(value) || !Object.hasOwn(value, key)) {
+            value = void 0;
+            break;
+          }
+          value = value[key];
+        }
+        mapped[field] = field === "userId" ? identifier(value) : scalar(value);
+      }
+      for (const identity of candidates) for (const field of mappedFields) delete identity[field];
+      if (mappedFields.has("userId")) conflictingIds.clear();
+      if (mapped.userId || mapped.username || mapped.email) candidates.push(mapped);
+    }
+    const ids = /* @__PURE__ */ new Set([
+      ...conflictingIds,
+      ...candidates.map((identity) => identity.userId).filter(Boolean)
+    ]);
+    if (ids.size > 1)
+      return { identityConflict: `身份接口同时返回不同用户 ID（${[...ids].join("、")}）` };
+    const result = {};
+    for (const field of ["userId", "username", "email", "displayName"]) {
+      const values = [...new Set(candidates.map((identity) => identity[field]).filter(Boolean))];
+      if (values.length === 1) result[field] = values[0];
+      else if (values.length > 1 && field !== "displayName")
+        return { identityConflict: `身份接口同时返回不同${field === "email" ? "邮箱" : "用户名"}` };
+    }
+    return Object.keys(result).length ? result : null;
+  }
+  function findIdentityMatch(identity, username, aliases = [], expectedIdentity) {
+    for (const field of ["username", "email"])
+      if (identitiesEqual(identity[field], expectedIdentity?.[field]))
+        return { value: identity[field], expected: expectedIdentity[field], source: "stored" };
+    if (expectedIdentity?.username || expectedIdentity?.email) return null;
+    for (const value of [identity.username, identity.email])
+      if (identitiesEqual(value, username)) return { value, expected: username, source: "primary" };
+    for (const alias of aliases) {
+      const field = typeof alias === "string" && alias.includes("@") ? "email" : "username";
+      if (identitiesEqual(identity[field], alias))
+        return { value: identity[field], expected: alias, source: "alias" };
+    }
+    return null;
+  }
+  function findIdentityOwner(identity, knownIdentities = []) {
+    return knownIdentities.find((known) => {
+      if (identity?.userId && known.userId) return String(identity.userId) === String(known.userId);
+      return ["username", "email"].some((field) => identitiesEqual(identity?.[field], known[field]));
+    });
+  }
+  function conflictingIdentitySamples(first, second) {
+    if (first?.identityConflict || second?.identityConflict) return true;
+    if (first?.userId && second?.userId) return String(first.userId) !== String(second.userId);
+    return ["username", "email"].some(
+      (field) => first?.[field] && second?.[field] && !identitiesEqual(first[field], second[field])
+    );
+  }
+  function compareAccountIdentity(identity, username, expectedUserId, options = {}) {
+    if (identity?.identityConflict)
+      return { match: "unknown", detail: `身份证据冲突：${identity.identityConflict}` };
+    if (!identity)
+      return {
+        match: "unknown",
+        detail: expectedUserId ? `本账号已绑定用户 ID ${expectedUserId}，当前页面尚未返回用户 ID` : "读不到当前登录身份"
+      };
+    const origin = `读自${identitySourceLabel(identity.source)}`;
+    const owner = identity.userId ? options.knownUsers?.[identity.userId] : void 0;
+    if (owner)
+      return {
+        match: "mismatch",
+        detail: `当前登录的是用户 ID ${identity.userId}（本站账号 ${owner}，${origin}），本次要签到的是 ${expectedUserId ?? username}`
+      };
+    if (expectedUserId) {
+      if (!identity.userId)
+        return {
+          match: "unknown",
+          detail: `本账号已绑定用户 ID ${expectedUserId}，当前页面尚未返回用户 ID（${origin}）`
+        };
+      if (String(identity.userId) !== String(expectedUserId))
+        return {
+          match: "mismatch",
+          detail: `当前登录的是用户 ID ${identity.userId}（${origin}），本次要签到的是 ${expectedUserId}`
+        };
+      if (identity.source === "storage")
+        return { match: "unknown", detail: "本地保存的用户 ID 相同，但尚未确认当前登录会话" };
+      return {
+        match: "confirmed",
+        detail: `用户 ID ${identity.userId} 一致（${origin}，账号备注不参与身份核验）`
+      };
+    }
+    if (identity.source === "storage")
+      return { match: "unknown", detail: "本地登录态只是身份提示，不能证明当前登录账号" };
+    const nameOwner = findIdentityOwner(identity, options.knownIdentities);
+    if (nameOwner)
+      return {
+        match: "mismatch",
+        detail: `当前登录名已绑定给本站其他账号 ${nameOwner.label ?? nameOwner.username ?? nameOwner.email}`
+      };
+    const match = findIdentityMatch(
+      identity,
+      username,
+      options.expectedAliases,
+      options.expectedIdentity
+    );
+    if (match)
+      return {
+        match: "confirmed",
+        detail: match.source === "stored" ? `账号 ${username} 已保存的站点身份 ${match.expected} 与当前身份一致（${origin}）` : match.source === "alias" ? `账号 ${username} 保存的身份别名 ${match.expected} 与当前身份 ${match.value} 一致（${origin}）` : `账号 ${username} 的完整登录标识一致（${origin}）`
+      };
+    if ((options.expectedIdentity?.username || options.expectedIdentity?.email) && !["username", "email"].some((field) => options.expectedIdentity[field] && identity[field]))
+      return {
+        match: "unknown",
+        detail: `本站已绑定登录标识 ${options.expectedIdentity.username ?? options.expectedIdentity.email}，当前尚未返回可核对的字段（${origin}）`
+      };
+    const currentName = identity.username ?? identity.email;
+    return currentName ? {
+      match: "mismatch",
+      detail: `当前登录的是 ${currentName}（${origin}），本次要签到的是 ${options.expectedIdentity?.username ?? options.expectedIdentity?.email ?? username}`
+    } : { match: "unknown", detail: `站点未返回可比对的登录名（${origin}，昵称不作为唯一身份）` };
+  }
+
+  // src/modules/learning/lottery-learning.js
+  var auxiliaryLotteryText = /记录|紀錄|历史|歷史|规则|規則|概率|奖池|獎池|结果|結果|说明|說明|知道了|关闭|關閉|取消|返回|复制|複製|\b(?:history|records?|rules?|odds|results?|summary|close|cancel|back|copy)\b/i;
+  var lotteryActionText = /抽[奖獎签籤]|翻牌|(?:连|連)抽|[单單]抽|抽\s*(?:[1-9]\d*|[一二三四五六七八九十百]+)\s*次|(?:立即|开始|開始|免费|免費|再|点击|點擊)抽|\b(?:draw|spin|scratch)\b/i;
+  var lotteryRoute = /(?:^|\/)(?:lottery|lotteries|lucky[-_]?draw|draw|prize|spin)(?:\/|$)/i;
+  var lotteryCompletedWords = Object.freeze([
+    "抽奖成功",
+    "抽奖完成",
+    "开奖成功",
+    "恭喜中奖",
+    "恭喜中獎",
+    "谢谢参与",
+    "謝謝參與",
+    "未中奖",
+    "未中獎",
+    "未中",
+    "You won",
+    "Thanks for playing",
+    "Better luck next time",
+    "Draw successful",
+    "Draw complete",
+    "Draw completed"
+  ]);
+  var lotteryAlreadyWords = Object.freeze([
+    "今日梦火抽签次数已耗尽",
+    "今日抽奖次数已耗尽",
+    "今日抽奖次数已用完",
+    "今日抽奖次数已达上限",
+    "已达到今日抽奖上限",
+    "This draw is complete",
+    "You have already drawn today",
+    "Daily draw limit reached"
+  ]);
+  function compactText(value) {
+    return typeof value === "string" ? value.normalize("NFKC").replace(/\s+/g, " ").trim() : "";
+  }
+  function matchesLotteryActionText(value) {
+    const text = compactText(value);
+    return !!text && !auxiliaryLotteryText.test(text) && lotteryActionText.test(text);
+  }
+  function mentionsLotteryAction(value) {
+    return lotteryActionText.test(compactText(value));
+  }
+  function isLotteryPagePath(path) {
+    const text = compactText(path);
+    return lotteryRoute.test(text.split(/[?#]/, 1)[0]) || lotteryRoute.test(text.split("#")[1] ?? "");
+  }
+  function isLearnedLotteryAction(event) {
+    if ((event?.type ?? event?.kind) !== "click" || event.href || event.gesture === "right")
+      return false;
+    if (event.loginAction === "entry" || event.loginAction === "oauth") return false;
+    if (auxiliaryLotteryText.test(event.label ?? "")) return false;
+    return event.checkinAction === "lottery" || matchesLotteryActionText(event.label);
+  }
+  function lotteryResultAssertionSelector(scopes, words) {
+    return [...new Set(scopes)].filter((scope) => typeof scope === "string" && scope.trim() && !scope.includes("text=")).slice(-2).flatMap(
+      (scope) => [...new Set(words)].filter((word) => typeof word === "string" && word.trim() && !word.includes(",")).map((word) => `${scope} >> text=${word}`)
+    ).join(", ");
+  }
+
   // src/modules/learning/service.js
   var bgLearningState = { store: {} };
   function Qn(e2) {
@@ -5491,7 +5798,7 @@
   function Yu(e2) {
     if (e2.type === `click`) {
       let t = Hu(e2);
-      return t && Uu(t) || e2.loginAction && !(e2.loginAction === `submit` && bgLearningState.Ru.test(e2.label ?? ``)) || Ku(e2) || Ju(e2) ? `none` : e2.evidence?.kind === `already` ? `already` : e2.evidence?.kind === `success` ? `confirmed` : qu(e2) ? `none` : e2.label && bgLearningState.Ru.test(e2.label) ? `action` : `none`;
+      return t && Uu(t) || e2.loginAction && !(e2.loginAction === `submit` && (bgLearningState.Ru.test(e2.label ?? ``) || isLearnedLotteryAction(e2))) || Ku(e2) || Ju(e2) ? `none` : e2.evidence?.kind === `already` ? `already` : e2.evidence?.kind === `success` ? `confirmed` : qu(e2) ? `none` : isLearnedLotteryAction(e2) || e2.label && !e2.href && !mentionsLotteryAction(e2.label) && bgLearningState.Ru.test(e2.label) ? `action` : `none`;
     }
     if (e2.type === `fill` || e2.type === `drag`) {
       let t = e2.afterText ?? [];
@@ -5586,7 +5893,8 @@
   function zd(e2) {
     if (!e2 || e2.kind !== `success` && e2.kind !== `already` || !Array.isArray(e2.words)) return;
     let t = e2.words.filter((e3) => typeof e3 == `string` && Wf(e3)).slice(0, 4);
-    return t.length ? { kind: e2.kind, words: t } : void 0;
+    let selector = Hf(e2.selector);
+    return t.length ? { kind: e2.kind, words: t, ...selector ? { selector } : {} } : void 0;
   }
   function Bd(e2) {
     return /\[href\s*[*^$|~]?=\s*["']?([^"'\]]+)["']?\]/i.exec(e2)?.[1];
@@ -5622,7 +5930,7 @@
     return e2.kind === `fill` && bgLearningState.Nd.test(`${e2.selector ?? ``} ${e2.label ?? ``}`) ? true : bgLearningState.Pd.test((e2.label ?? ``).trim());
   }
   function Kd(e2) {
-    return e2.fieldRole === `username` || e2.fieldRole === `password` ? true : e2.kind === `click` ? e2.loginAction === `oauth` || !(e2.loginAction !== `submit` || bgLearningState.Sd.test(e2.label ?? ``) || e2.href && !bgLearningState.Md.test(e2.href)) : false;
+    return e2.fieldRole === `username` || e2.fieldRole === `password` ? true : e2.kind === `click` ? e2.loginAction === `oauth` || !(e2.loginAction !== `submit` || isLearnedLotteryAction(e2) || bgLearningState.Sd.test(e2.label ?? ``) || e2.href && !bgLearningState.Md.test(e2.href)) : false;
   }
   function qd(e2) {
     return `${e2.type}|${e2.selector}|${e2.path}|${e2.at}`;
@@ -5676,7 +5984,7 @@
       let i = r.type === `click` ? zd(r.evidence) : void 0, a = n.get(qd(r));
       if (a !== void 0) {
         let e4 = t[a], n2 = Rd(r);
-        n2.length && (e4.afterText = n2), i && (e4.evidence = i), r.type === `fill` && (e4.hasValue = r.hasValue), Vd(r) && Object.assign(e4, Ud(r));
+        n2.length && (e4.afterText = n2), i && (e4.evidence = i), isLearnedLotteryAction(r) && (e4.checkinAction = `lottery`), r.type === `fill` && (e4.hasValue = r.hasValue), Vd(r) && Object.assign(e4, Ud(r));
         continue;
       }
       let o = Rd(r), s = {
@@ -5684,6 +5992,7 @@
         selector: e3,
         label: r.label ?? ``,
         path: r.path,
+        ...isLearnedLotteryAction(r) ? { checkinAction: `lottery` } : {},
         ...r.type === `click` && r.href ? { href: r.href } : {},
         ...r.type === `fill` ? { hasValue: r.hasValue } : {},
         ...r.type === `fill` && r.fieldRole ? { fieldRole: r.fieldRole } : {},
@@ -5754,7 +6063,9 @@
     }, a = n.filter((t2) => {
       let n2 = $d(e2, t2);
       return !!n2 && !Qd(e2, n2);
-    }), o = [...a].reverse().find((e3) => !!e3.evidence), s = [...a].reverse().find((e3) => bgLearningState.Sd.test(e3.label ?? ``) || bgLearningState.Cd.test(e3.path)), c = a.at(-1), l2 = o ?? s ?? c;
+    }), o = [...a].reverse().find((e3) => !!e3.evidence), s = [...a].reverse().find(
+      (e3) => isLearnedLotteryAction(e3) || bgLearningState.Sd.test(e3.label ?? ``) || bgLearningState.Cd.test(e3.path)
+    ), c = a.at(-1), l2 = o ?? s ?? c;
     if (l2 && !o) {
       let t2 = l2.href ? Ld(e2, l2.href) : void 0;
       if (t2 && J(t2) !== J(l2.path) || !s && tf(e2, l2)) return [];
@@ -5917,15 +6228,42 @@
       return !!n2 && !Qd(e2, n2);
     }).map((e3) => gf(e3, a));
     if (o.length === 0) return null;
-    let s = nf(e2, i, o), c = lf(e2, o, s), l2 = uf(s, c), u = o.some((e3) => bgCheckinState.Ds.test(e3.label ?? ``)), d = pf(o, l2, bgLearningState.xd + (u ? 3 : 0)), f = [...o].reverse().find((e3) => e3.evidence)?.evidence, p = u ? bgCheckinState.Ts : f?.kind === `success` ? f.words : bgLearningState.Od, m = u ? bgCheckinState.Es : f?.kind === `already` ? f.words : bgLearningState.kd;
-    return u && (d.push({ type: `assert`, text: [...p, ...m], timeoutMs: 15e3 }), d.unshift({
+    const lastLottery = o.findLastIndex(isLearnedLotteryAction);
+    const lotteryOutcome = lastLottery >= 0 ? o[lastLottery].evidence : void 0;
+    const lotteryScopes = lotteryOutcome?.selector ? [lotteryOutcome.selector] : [];
+    if (lastLottery >= 0 && lotteryScopes.length) o = o.slice(0, lastLottery + 1);
+    let s = nf(e2, i, o), learnedPath = n.identityPath ? Ld(e2, n.identityPath) : null, c = learnedPath && !Qd(e2, learnedPath) ? learnedPath : lf(e2, o, s), l2 = uf(s, c), u = o.some(isLearnedLotteryAction), d = pf(o, l2, bgLearningState.xd + (u ? 3 : 0)), f = u ? lotteryOutcome : [...o].reverse().find((e3) => e3.evidence)?.evidence, p = u ? [
+      .../* @__PURE__ */ new Set([
+        ...bgCheckinState.Ts,
+        ...lotteryScopes.length ? lotteryCompletedWords : [],
+        ...f?.kind === `success` ? f.words : []
+      ])
+    ] : f?.kind === `success` ? f.words : bgLearningState.Od, m = u ? [
+      .../* @__PURE__ */ new Set([
+        ...bgCheckinState.Es,
+        ...lotteryAlreadyWords,
+        ...f?.kind === `already` ? f.words : []
+      ])
+    ] : f?.kind === `already` ? f.words : bgLearningState.kd, resultSelector = u ? lotteryResultAssertionSelector(lotteryScopes, p) : ``;
+    return u && (d.push({
+      type: `assert`,
+      ...resultSelector ? { selector: resultSelector, text: m } : { text: [...p, ...m] },
+      timeoutMs: 15e3
+    }), d.unshift({
       type: `if`,
-      condition: { type: `text`, words: bgCheckinState.Es },
-      then: [{ type: `assert`, text: bgCheckinState.Es, result: `already` }]
+      condition: { type: `text`, words: m },
+      then: [{ type: `assert`, text: m, result: `already` }]
     })), d.push({
       type: `if`,
-      condition: { type: `text`, words: p },
-      then: [{ type: `assert`, text: p, result: `success`, timeoutMs: 5e3 }],
+      condition: resultSelector ? { type: `selector`, selector: resultSelector } : { type: `text`, words: p },
+      then: [
+        {
+          type: `assert`,
+          ...resultSelector ? { selector: resultSelector } : { text: p },
+          result: `success`,
+          timeoutMs: 5e3
+        }
+      ],
       else: [{ type: `assert`, text: m, result: u ? `success` : `already`, timeoutMs: 5e3 }]
     }), {
       workflow: l2.length ? { steps: d, route: l2, ...c ? { identityPath: c } : {} } : { steps: d },
@@ -5937,15 +6275,15 @@
     if (n !== `login`) {
       if (s) l2 = { kind: `login-as-checkin` };
       else {
-        let n2 = _f(e2, t, { personalTexts: r.personalTexts })?.workflow ?? null;
+        let n2 = _f(e2, t, { personalTexts: r.personalTexts, identityPath: r.identityPath })?.workflow ?? null;
         n2?.identityPath && (l2 = { kind: `workflow`, workflow: n2 });
       }
     }
-    let u = [];
+    let u = [], lotteryPageOnly = t.some((event) => isLotteryPagePath(Hu(event))) && !t.some(isLearnedLotteryAction) && $u(t, n).checkin === `none`, lotteryNotice = `只打开了抽奖页面，还没有录到实际抽奖。请在原页面点击礼盒或抽奖按钮，等开奖结果出现后，再点「结束学习」。本次学习还在继续，不需要重新开始`;
     return n === `login` ? a || u.push(`还没有录到完整的登录动作；请手动完成登录后再结束学习`) : !a && !l2 ? u.push(
-      c ? `这次演示还没有录到任何登录或签到动作。若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请继续在原页面演示：完成一遍登录并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始` : `这次演示还没有录到任何登录或签到动作。请先在打开的站点页面里完成一遍登录、并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`
+      lotteryPageOnly ? lotteryNotice : c ? `这次演示还没有录到任何登录或签到动作。若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请继续在原页面演示：完成一遍登录并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始` : `这次演示还没有录到任何登录或签到动作。请先在打开的站点页面里完成一遍登录、并点到签到按钮，再点「结束学习」；本次学习还在继续，不需要重新开始`
     ) : a ? l2 || u.push(
-      c ? `没有录到签到动作：若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请在签到按钮可点时重新演示一次` : `没有录到登录之后的签到动作，这次只保存登录配置；请在按钮可点时重新演示一次签到`
+      lotteryPageOnly ? lotteryNotice : c ? `没有录到签到动作：若本站是「登录即签到」（登录成功后自动完成、页面上没有签到按钮），在账号行点「登录即签到」即可保存完整流程；否则请在签到按钮可点时重新演示一次` : `没有录到登录之后的签到动作，这次只保存登录配置；请在按钮可点时重新演示一次签到`
     ) : u.push(`没有录到完整的登录动作（账号/密码字段或第三方登录入口），这次只保存签到流程`), o && !s && u.push(
       `这次演示还不满足「登录即签到」的保存条件（需要先登录成功进入站内页面，且没有点到签到按钮），已按普通签到流程处理`
     ), { login: a, checkin: l2, eventCount: i, notices: u };
@@ -6248,15 +6586,13 @@
         at: e2.at
       };
     }
-    let o = e2.evidence && (e2.evidence.kind === `success` || e2.evidence.kind === `already`) && Array.isArray(e2.evidence.words) ? {
-      kind: e2.evidence.kind,
-      words: e2.evidence.words.filter((e3) => typeof e3 == `string` && Wf(e3)).slice(0, 4)
-    } : void 0, s = Lf(e2.anchor), c = Bf(e2.gesture), l2 = Vf(e2.key), u = e2.holdMs, d = typeof u == `number` && Number.isFinite(u) && u > 0 && u <= 6e4 ? Math.round(u) : void 0, f = Lf(e2.dragToAnchor), p = Rf(e2.fingerprint), m = e2.dragToSelector, h = typeof m == `string` && m.trim() && m.length <= 300 && !m.includes(`text=`) && !tp(m.trim()) ? m.trim() : void 0;
+    let o = zd(e2.evidence), s = Lf(e2.anchor), c = Bf(e2.gesture), l2 = Vf(e2.key), u = e2.holdMs, d = typeof u == `number` && Number.isFinite(u) && u > 0 && u <= 6e4 ? Math.round(u) : void 0, f = Lf(e2.dragToAnchor), p = Rf(e2.fingerprint), m = e2.dragToSelector, h = typeof m == `string` && m.trim() && m.length <= 300 && !m.includes(`text=`) && !tp(m.trim()) ? m.trim() : void 0;
     return {
       type: `click`,
       selector: a,
       label: r,
       path: i,
+      ...isLearnedLotteryAction(e2) ? { checkinAction: `lottery` } : {},
       ...If(e2.href) ? { href: If(e2.href) } : {},
       ...e2.loginAction === `entry` || e2.loginAction === `submit` || e2.loginAction === `oauth` ? { loginAction: e2.loginAction } : {},
       ...o ? { evidence: o } : {},
@@ -6482,6 +6818,44 @@
   async function Fm(e2, t) {
     return rp(t.url ?? t.tab?.url, await Pm(e2));
   }
+  function sanitizeLearnedIdentitySource(value, site, currentPath, kind) {
+    const source = readIdentitySource({ identitySource: value });
+    if (!source) return null;
+    const result = {};
+    const safeUrl = (path, page = false) => {
+      try {
+        const url = new URL(path, site.loginUrl);
+        if (url.origin !== new URL(site.loginUrl).origin || !/^https?:$/.test(url.protocol) || url.username || url.password || url.search || !page && url.hash || /(?:access_token|refresh_token|id_token|code|state|token|secret|password)=/i.test(url.hash))
+          return null;
+        return url.pathname + url.hash;
+      } catch {
+        return null;
+      }
+    };
+    if (kind === "api" && source.endpoint && source.responseFields) {
+      const endpoint = safeUrl(source.endpoint);
+      const responseFields = {};
+      for (const [field, path] of Object.entries(source.responseFields))
+        if (/^[\w-]+(?:\.[\w-]+)*$/.test(path)) responseFields[field] = path;
+      if (endpoint && Object.keys(responseFields).length)
+        Object.assign(result, { endpoint, responseFields });
+    }
+    if (source.pagePath && source.pageFields) {
+      const pagePath = safeUrl(source.pagePath, true);
+      if (pagePath === currentPath)
+        Object.assign(result, {
+          pagePath,
+          pageFields: source.pageFields,
+          ...source.pageFieldRules ? { pageFieldRules: source.pageFieldRules } : {}
+        });
+    }
+    return Object.keys(result).length ? result : null;
+  }
+  function latestLearningLogin(events = []) {
+    return [...events].reverse().find(
+      (event) => event.loginAction === "submit" || event.loginAction === "oauth" || event.type === "fill" && event.fieldRole === "password" && event.key === "Enter"
+    );
+  }
   async function recordLearningIdentity(observation, sender, runId) {
     const tabId = sender.tab?.id;
     if (tabId == null || !bgProxiesState.Xn(sender.frameId))
@@ -6496,7 +6870,9 @@
     if (!account || account.siteId !== session.siteId)
       return { ok: false, error: "学习目标账号归属已改变" };
     const identity = observation?.identity;
-    if (identity?.source !== "visible" || typeof identity.userId !== "string" || !/^\d{1,12}$/.test(identity.userId))
+    if (!["visible", "api"].includes(identity?.source) || identity.source === "api" && observation.stable !== true || identity.identityConflict || !(typeof identity.userId === "string" && /^[\w.:-]{1,128}$/.test(identity.userId) || ["username", "email"].some(
+      (field) => typeof identity[field] === "string" && identity[field].trim() && identity[field].length <= 128
+    )))
       return { ok: true, ignored: true };
     let currentPath;
     try {
@@ -6507,45 +6883,127 @@
     }
     if (observation.path !== currentPath || currentPath.length > 500)
       return { ok: true, ignored: true };
-    const login = [...session.events].reverse().find(
-      (event) => event.loginAction === "submit" || event.loginAction === "oauth" || event.type === "fill" && event.fieldRole === "password" && event.key === "Enter"
+    const site = bgSitesState.Y(
+      session.siteId,
+      await bgPlatformState.t.get(bgPlatformState.r.sites, [])
     );
-    if (!login && account.identity?.userId !== identity.userId) return { ok: true, ignored: true };
+    if (!site) return { ok: false, error: "学习站点已不存在" };
+    const sourceDescriptor = sanitizeLearnedIdentitySource(
+      observation.identitySource ?? identity.identitySource,
+      site,
+      currentPath,
+      identity.source
+    );
+    if (identity.source === "api" && !sourceDescriptor?.endpoint)
+      return { ok: true, ignored: true, reason: "尚未取得可重读的当前用户接口与字段路径" };
+    const login = latestLearningLogin(session.events);
+    if (!login && (!(account.identity?.userId || account.identity?.username || account.identity?.email) || compareAccountIdentity(identity, account.username, account.identity?.userId, {
+      expectedIdentity: account.identity
+    }).match !== "confirmed"))
+      return {
+        ok: true,
+        ignored: true,
+        reason: "已读到页面身份；请先演示本账号的登录，再学习身份读取位置"
+      };
     if (login && Ff(login.path) === Ff(currentPath)) return { ok: true, ignored: true };
     const previous = session.learnedIdentities?.[currentPath];
-    const clean = { userId: identity.userId, source: "visible", verifiedByLearning: true };
+    const clean = {
+      ...identity.userId ? { userId: identity.userId } : {},
+      source: identity.source,
+      verifiedByLearning: true
+    };
     for (const field of ["username", "email"])
       if (typeof identity[field] === "string" && identity[field].trim() && identity[field].length <= 160)
         clean[field] = identity[field].trim();
+    const sameLogin = previous?.loginAt === login?.at;
+    const previousSource = sameLogin ? previous?.sourceDescriptor : null;
+    const selectedFields = (Array.isArray(observation.selectedFields) ? observation.selectedFields : []).filter(
+      (field) => ["userId", "username", "email"].includes(field) && sourceDescriptor?.pageFields?.[field]
+    );
+    const descriptor = sourceDescriptor ? {
+      ...previousSource,
+      ...sourceDescriptor,
+      ...previousSource?.pageFields || sourceDescriptor.pageFields ? { pageFields: { ...previousSource?.pageFields, ...sourceDescriptor.pageFields } } : {},
+      ...previousSource?.pageFieldRules || sourceDescriptor.pageFieldRules ? {
+        pageFieldRules: {
+          ...previousSource?.pageFieldRules,
+          ...sourceDescriptor.pageFieldRules
+        }
+      } : {}
+    } : previousSource;
     const value = {
       identity: clean,
       loginAt: login?.at,
-      conflict: previous?.conflict === true || !!previous && previous.identity.userId !== clean.userId
+      ...descriptor ? { sourceDescriptor: descriptor } : {},
+      selectedFields: [
+        .../* @__PURE__ */ new Set([...sameLogin ? previous?.selectedFields ?? [] : [], ...selectedFields])
+      ],
+      conflict: sameLogin && previous?.conflict === true || Object.values(session.learnedIdentities ?? {}).some(
+        (sample) => sample.loginAt === login?.at && conflictingIdentitySamples(sample.identity, clean)
+      )
     };
     await bgPlatformState.n.set(bgLearningState.a(tabId), {
       ...session,
-      learnedIdentities: { ...session.learnedIdentities, [currentPath]: value }
+      learnedIdentities: { ...session.learnedIdentities, [currentPath]: value },
+      ...sourceDescriptor && (session.identitySourceLoginAt !== login?.at || selectedFields.length || !session.identitySourcePath || sourceDescriptor.pageFields && !session.identitySourceSelected) ? {
+        identitySourcePath: currentPath,
+        identitySourceLoginAt: login?.at,
+        identitySourceSelected: selectedFields.length > 0 || session.identitySourceLoginAt === login?.at && session.identitySourceSelected === true
+      } : {}
     });
     return { ok: true };
   }
   async function prepareLearnedAccountIdentity(session, account, site, workflow) {
-    if (!workflow?.identityPath) return null;
-    const url = new URL(workflow.identityPath, site.loginUrl);
+    const identityPath = session.identitySourcePath ?? workflow?.identityPath;
+    if (!identityPath) return null;
+    const url = new URL(identityPath, site.loginUrl);
     if (!bgCheckinState.N(site, url.href)) throw Error("学习的身份核验页不在本站");
     const sample = session.learnedIdentities?.[url.pathname + url.hash];
     if (!sample) return null;
+    if (sample.loginAt !== latestLearningLogin(session.events)?.at)
+      throw Error("身份字段来自上一次登录，请在本次登录后重新打开个人资料页核验");
     if (sample.conflict) throw Error("学习期间身份核验页出现过不同用户 ID，请确认目标账号后重新学习");
     const identity = sample.identity;
     const accounts = await bgPlatformState.t.get(bgPlatformState.r.accounts, []), sites = await bgPlatformState.t.get(bgPlatformState.r.sites, []);
     const current = accounts.find((item) => item.id === account.id);
     if (!current || current.siteId !== site.id) throw Error("学习目标账号归属已改变");
-    if (current.identity?.userId && current.identity.userId !== identity.userId)
-      throw Error("学习页用户 ID 与本账号原有绑定不符，已保留原绑定，请确认当前登录账号");
-    const conflict = Kp(accounts, sites, site).find(
-      (item) => item.id !== account.id && item.identity?.userId === identity.userId
+    if ((current.identity?.userId || current.identity?.username || current.identity?.email) && compareAccountIdentity(identity, current.username, current.identity?.userId, {
+      expectedIdentity: current.identity
+    }).match !== "confirmed")
+      throw Error("学习页身份与本账号原有绑定不符，已保留原绑定，请确认当前登录账号");
+    if (!identity.userId && compareAccountIdentity(identity, current.username, void 0, {
+      expectedIdentity: current.identity
+    }).match !== "confirmed")
+      throw Error("学习页登录名未能精确核对到本账号，已保留原绑定");
+    if (Object.values(session.learnedIdentities ?? {}).some(
+      (other) => other.loginAt === sample.loginAt && conflictingIdentitySamples(other.identity, identity)
+    ))
+      throw Error("本次登录的不同页面出现过不同账号身份，请确认目标账号后重新学习");
+    const conflict = findIdentityOwner(
+      identity,
+      Kp(accounts, sites, site).filter((item) => item.id !== account.id).map((item) => ({ ...item.identity, label: item.label || item.username }))
     );
     if (conflict) throw Error("学习页用户 ID 已绑定给本站其他账号，已保留原有账号数据");
     return identity;
+  }
+  function prepareLearnedIdentitySource(session, site, identity) {
+    if (!identity) return null;
+    const preferred = session.learnedIdentities?.[session.identitySourcePath];
+    const samples = Object.values(session.learnedIdentities ?? {}).filter(
+      (sample) => sample.loginAt === preferred?.loginAt && sample.sourceDescriptor && !sample.conflict && !conflictingIdentitySamples(sample.identity, identity)
+    );
+    if (!samples.length) return null;
+    const page = preferred?.sourceDescriptor?.pageFields ? preferred.sourceDescriptor : samples.find((sample) => sample.selectedFields?.length)?.sourceDescriptor ?? samples.find((sample) => sample.sourceDescriptor.pageFields)?.sourceDescriptor;
+    const api = [...samples].reverse().find((sample) => sample.sourceDescriptor.endpoint)?.sourceDescriptor;
+    return {
+      ...readIdentitySource(site),
+      ...api ? { endpoint: api.endpoint, responseFields: api.responseFields } : {},
+      ...page ? {
+        pagePath: page.pagePath,
+        pageFields: page.pageFields,
+        pageFieldRules: page.pageFieldRules
+      } : {}
+    };
   }
   async function Im(e2, i, o = {}) {
     let s = await bgProxiesState.Mm(e2);
@@ -6593,7 +7051,11 @@
           ok: false,
           error: `还不能按「登录即签到」保存：需要先登录成功并进入站内页面，且本次演示没有点到过签到按钮。请继续演示（或点「结束学习」按现有内容保存）`
         };
-      let C = Jp(d2), w = vf(p2, s.events, l3, { loginAsCheckin: S, personalTexts: C }), T = w.checkin?.kind === `login-as-checkin` ? _f(p2, s.events, { personalTexts: C })?.workflow ?? null : null, E = s.endLearningPrompted === true, D = bf({
+      let C = Jp(d2), w = vf(p2, s.events, l3, {
+        loginAsCheckin: S,
+        personalTexts: C,
+        identityPath: s.identitySourcePath
+      }), T = w.checkin?.kind === `login-as-checkin` ? _f(p2, s.events, { personalTexts: C, identityPath: s.identitySourcePath })?.workflow ?? null : null, E = s.endLearningPrompted === true, D = bf({
         intent: l3,
         loginAsCheckinRequested: b,
         artifacts: w,
@@ -6714,11 +7176,20 @@
         );
       if (k.length && A.length === 0 && learnedIdentity)
         try {
+          const learnedSource = prepareLearnedIdentitySource(s, re, learnedIdentity);
+          if (learnedSource) {
+            await bgSitesState.store.updateSite(p2.id, {
+              identitySource: { ...learnedSource, learnedAt: Date.now() }
+            });
+            ee.push(
+              `已学会本站身份读取位置${learnedSource.endpoint ? `（接口 ${learnedSource.endpoint}）` : `（页面 ${learnedSource.pagePath}）`}，本站现有和新增账号统一复用；各账号单独保存自己的身份值`
+            );
+          }
           await bgAccountsState.store.saveAccountIdentity(d2.id, learnedIdentity, {
             preserveBinding: true
           });
           ee.push(
-            `已将本账号绑定到本站用户 ID ${learnedIdentity.userId}，以后按 ID 核验，备注仅用于显示`
+            learnedIdentity.userId ? `已将本账号绑定到本站用户 ID ${learnedIdentity.userId}，以后按 ID 核验，备注仅用于显示` : `已将本账号绑定到本站登录标识 ${learnedIdentity.username ?? learnedIdentity.email}，以后按完整登录标识核验`
           );
         } catch (error) {
           A.push(error instanceof Error ? error.message : String(error));
@@ -6814,7 +7285,15 @@
       tabId: m,
       createdAt: Date.now(),
       events: [],
-      personalTexts: Jp(c)
+      personalTexts: Jp(c),
+      identitySite: {
+        id: u.id,
+        loginUrl: u.loginUrl,
+        adapter: { family: u.adapter?.family },
+        identitySource: readIdentitySource(u),
+        ...u.tokenConfig ? { tokenConfig: u.tokenConfig } : {},
+        ...u.authBootstrap ? { authBootstrap: u.authBootstrap } : {}
+      }
     };
     await bgPlatformState.n.set(bgLearningState.a(m), _), await chrome.tabs.update(m, { active: true }).catch(() => {
     });
@@ -7073,7 +7552,10 @@
     Pm,
     Fm,
     recordLearningIdentity,
+    sanitizeLearnedIdentitySource,
+    latestLearningLogin,
     prepareLearnedAccountIdentity,
+    prepareLearnedIdentitySource,
     Im,
     Lm,
     Rm,
@@ -7578,6 +8060,32 @@
     handleMessage: handleSettingsMessage
   });
 
+  // src/shared/site-login-recipes.js
+  function withSiteIdentityRecipe(site) {
+    let origin;
+    try {
+      origin = new URL(site.loginUrl).origin;
+    } catch {
+      return site;
+    }
+    if (origin !== "https://orevx.ai") return site;
+    const source = readIdentitySource(site) ?? {};
+    if (source.endpoint) return site;
+    return {
+      ...site,
+      identitySource: {
+        ...source,
+        storageKey: source.storageKey ?? "auth-user",
+        tokenKey: source.tokenKey ?? "auth-token",
+        tokenHeader: source.tokenHeader ?? "Authorization",
+        tokenPrefix: source.tokenPrefix ?? "Bearer ",
+        pagePath: source.pagePath ?? "/user/profile",
+        // An absent/blank endpoint is a request to use the validated current-user location.
+        endpoint: "https://server.orevx.ai/api/user/me"
+      }
+    };
+  }
+
   // src/modules/checkin/service.js
   var bgCheckinState = { store: {} };
   function qe(e2) {
@@ -7756,19 +8264,8 @@
   function ft(e2) {
     return typeof e2 == `string` && e2.trim() ? e2.trim() : void 0;
   }
-  function pt(e2) {
-    let t = e2.identitySource;
-    if (!t || typeof t != `object` || Array.isArray(t)) return null;
-    let n = t, r = {
-      storageKey: ft(n.storageKey),
-      storageType: dt(n.storageType),
-      endpoint: ft(n.endpoint),
-      tokenKey: ft(n.tokenKey),
-      tokenStorageType: dt(n.tokenStorageType),
-      tokenHeader: ft(n.tokenHeader),
-      tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0
-    };
-    return !r.storageKey && !r.endpoint ? null : r;
+  function pt(site) {
+    return readIdentitySource(withSiteIdentityRecipe(site));
   }
   function mt(e2, t) {
     if (!t) return false;
@@ -7871,7 +8368,7 @@
       n2?.storageKey?.trim() || t.push(`Token 认证需要填写存储键名（如 auth_token）`), n2?.headerName?.trim() || t.push(`Token 认证需要填写请求头名称（如 Authorization）`), n2?.identityEndpoint && !N(e2, n2.identityEndpoint) && t.push(`身份接口必须与登录站点同源`);
     }
     let r = pt(e2);
-    r?.endpoint && !mt(e2, r.endpoint) && t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`), r?.endpoint && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`), e2.logoutApiUrl && !N(e2, e2.logoutApiUrl) && t.push(`退出接口必须与登录站点同源`);
+    r?.endpoint && !N(e2, r.endpoint) && !mt(e2, r.endpoint) && t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`), r?.endpoint && !N(e2, r.endpoint) && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`), r?.pagePath && !N(e2, r.pagePath) && t.push(`身份资料页必须与登录站点同源`), e2.logoutApiUrl && !N(e2, e2.logoutApiUrl) && t.push(`退出接口必须与登录站点同源`);
     let i = e2.authBootstrap?.endpoint?.trim();
     if (i) {
       let n2 = null;
@@ -9024,7 +9521,7 @@
     if (!a) return { ok: false, error: `账号不存在` };
     let o = await bgPlatformState.t.get(bgPlatformState.r.sites, []), s = bgSitesState.Y(a.siteId, o);
     if (!s) return { ok: false, error: `站点配置不存在` };
-    let d = s, f = bgAccountsState.jt(a, d), p = bgAccountsState.Mt(f.loginMethod);
+    let d = withSiteIdentityRecipe(s), f = bgAccountsState.jt(a, d), p = bgAccountsState.Mt(f.loginMethod);
     if (!p) return { ok: false, error: `本账号选择的登录方式无效，请重新选择` };
     if (!a.username?.trim())
       return { ok: false, error: `该账号缺少可核验的站点用户名或完整邮箱，请编辑账号后填写` };
@@ -9042,7 +9539,7 @@
       checkin: { ...d.checkin, method: f.checkinMethod }
     });
     if (m.length) return { ok: false, error: `站点配置无效: ${m[0]}` };
-    let h = f.checkinMethod === `none` ? (await bgPlatformState.t.get(bgPlatformState.r.balances, {}))[a.id] : void 0, g = i.filter((account) => account.siteId === d.id), _ = ![`github`, `oauth`, `passkey`, `manual`].includes(f.loginMethod) || a.identity?.source === `api` || f.loginMethod === `github` && a.identity?.verifiedByManagedLogin === true ? a.identity : void 0, v = a.identity?.userId ? g.find((e3) => e3.id !== a.id && e3.identity?.userId === a.identity?.userId) : void 0, y = v ? void 0 : _?.userId ?? (f.loginMethod !== `manual` && d.checkin?.method !== `workflow` && g.length === 1 ? d.adapter?.userId : void 0), b = !d.adapter && !y || d.adapter?.userId === y ? d : { ...d, adapter: { ...d.adapter, userId: y } }, x = await Oh(a, d);
+    let h = f.checkinMethod === `none` ? (await bgPlatformState.t.get(bgPlatformState.r.balances, {}))[a.id] : void 0, g = i.filter((account) => account.siteId === d.id), _ = ![`github`, `oauth`, `passkey`, `manual`].includes(f.loginMethod) || a.identity?.source === `api` || a.identity?.verifiedByManagedLogin === true || a.identity?.verifiedByLearning === true ? a.identity : void 0, v = a.identity?.userId ? g.find((e3) => e3.id !== a.id && e3.identity?.userId === a.identity?.userId) : void 0, y = v ? void 0 : _?.userId, b = !d.adapter && !y || d.adapter?.userId === y ? d : { ...d, adapter: { ...d.adapter, userId: y } }, x = await Oh(a, d);
     if (!x.ok) return { ok: false, error: x.error };
     let S = x.proxy;
     if (S) {
@@ -9130,8 +9627,14 @@
       effectiveCheckinMethod: f.checkinMethod,
       usesExtensionProxy: !!S,
       ..._?.userId ? { accountIdentityUserId: _.userId } : {},
-      ..._?.source === `api` && _.username ? { accountIdentityUsername: _.username } : {},
-      ..._?.source === `api` && _.email ? { accountIdentityEmail: _.email } : {},
+      ..._?.username ? { accountIdentityUsername: _.username } : {},
+      ..._?.email ? { accountIdentityEmail: _.email } : {},
+      siteAccountIdentities: g.filter((account) => account.id !== a.id).map((account) => ({
+        userId: account.identity?.userId,
+        username: account.identity?.username,
+        email: account.identity?.email,
+        label: account.label || account.username
+      })),
       siteAccountCount: g.length,
       siteAccountUserIds: Object.fromEntries(
         g.filter((e3) => e3.id !== a.id && e3.identity?.userId).map((e3) => [e3.identity.userId, e3.label || e3.username])
@@ -10843,6 +11346,7 @@
       loginUrl: t,
       pointerMode: e2.pointerMode ?? bgSitesState.f.pointerMode,
       successIndicator: n ? bgSitesState.f.successIndicator : e2.successIndicator,
+      identitySource: { ...bgSitesState.f.identitySource, ...e2.identitySource },
       closeModalSelectors: [
         .../* @__PURE__ */ new Set([
           `button >> text=今日关闭`,
@@ -12021,6 +12525,12 @@
             ...bgCheckinState.o
           ],
           successIndicator: `div >> text=账户数据, div >> text=Account Data, a[href="/console/token"], a[href="/console/topup"]`,
+          identitySource: {
+            storageKey: `user`,
+            storageType: `localStorage`,
+            endpoint: `/api/user/self`,
+            pagePath: `/console/personal`
+          },
           checkin: {
             method: `relogin`,
             url: `/console`,
@@ -13050,22 +13560,8 @@
   function br(e2) {
     return e2 === `api` ? `站点接口` : e2 === `storage` ? `本地登录态` : e2 === `visible` ? `页面文本` : `未知来源`;
   }
-  function xr(e2) {
-    if (!e2 || typeof e2 != `object`) return null;
-    let t = e2;
-    if (t.success === false) return null;
-    let n = t.data ?? t;
-    if (!n || typeof n != `object`) return null;
-    let r = (e3) => {
-      if (typeof e3 == `string` && e3.trim()) return e3.trim();
-      if (typeof e3 == `number` && Number.isFinite(e3)) return String(e3);
-    }, i = {
-      userId: r(n.id) ?? r(n.user_id) ?? r(n.userId),
-      username: r(n.username) ?? r(n.user_name) ?? r(n.name),
-      email: r(n.email),
-      displayName: r(n.display_name) ?? r(n.displayName) ?? r(n.nickname)
-    };
-    return Object.values(i).some(Boolean) ? i : null;
+  function xr(response) {
+    return parseIdentityResponse(response);
   }
   function Sr(e2) {
     return Nr(kr(e2));
@@ -13193,34 +13689,8 @@
     }
     return null;
   }
-  function Ur(e2, t, n, r) {
-    let i = r?.pageAccountMatch, a = i && (!e2 || e2.source === `visible`) && Br(i, t) ? i : null;
-    if (!e2)
-      return n ? { match: `unknown`, detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID` } : a ? { match: `confirmed`, detail: `页面显示账号 ${a} 一致（读自页面文本）` } : { match: `unknown`, detail: `读不到当前登录身份` };
-    let o = `读自${br(e2.source)}`, s = Hr(e2, t, r?.expectedAliases, r?.expectedIdentity), c = e2.userId ? r?.knownUsers?.[e2.userId] : void 0;
-    if (e2.userId && c)
-      return {
-        match: `mismatch`,
-        detail: n ? `当前登录的是用户 ID ${e2.userId}（本站账号 ${c}，${o}），本次要签到的是 ${n}` : `当前登录的是用户 ID ${e2.userId}（本站账号 ${c}，${o}），不是本次账号 ${t}`
-      };
-    if (n) {
-      if (!e2.userId)
-        return {
-          match: `unknown`,
-          detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID（${o}）`
-        };
-      return String(e2.userId) === String(n) ? { match: `confirmed`, detail: `用户 ID ${e2.userId} 一致（${o}，账号备注不参与身份核验）` } : {
-        match: `mismatch`,
-        detail: `当前登录的是用户 ID ${e2.userId}（${o}），本次要签到的是 ${n}`
-      };
-    }
-    let l2 = [e2.username, e2.email, e2.displayName].filter(Boolean);
-    if (l2.length === 0) return { match: `unknown`, detail: `站点未返回可比对的用户名（${o}）` };
-    let u = s?.value ?? a;
-    return u ? {
-      match: `confirmed`,
-      detail: s?.source === `stored` ? `账号 ${t} 已保存的站点身份 ${s.expected} 与当前身份一致（${o}）` : s?.source === `alias` ? `账号 ${t} 保存的身份别名 ${s.expected} 与当前身份 ${u} 一致（${o}）` : Br(u, t) ? `账号 ${t} 一致（${o}）` : `账号 ${t} 与站点用户名 ${u} 一致（${o}）`
-    } : { match: `mismatch`, detail: `当前登录的是 ${l2[0]}（${o}），本次要签到的是 ${t}` };
+  function Ur(identity, username, userId, options) {
+    return compareAccountIdentity(identity, username, userId, options);
   }
   function Wr(e2, t = `rect`) {
     return e2.kind === `inset-left` ? `${t}.left + Math.min(${e2.px}, ${t}.width / 2)` : e2.kind === `relative` ? `${t}.left + ${t}.width * ${Gr(e2.rx)}` : `${t}.left + ${t}.width / 2`;
@@ -13236,21 +13706,31 @@
     return `loginMethod` in t && !t.loginMethod && delete n.loginMethod, `proxyMode` in t && t.proxyMode !== `pool` && (delete n.proxyId, delete n.proxyPinned), `proxyMode` in t && t.proxyMode !== `custom` && delete n.customProxy, n;
   }
   function Io(e2, t) {
-    let n = e2.effectiveLoginMethod ?? `auto`, r = e2.accountIdentityUserId, managedForm = n === `form` && e2.formCredentialsSubmitted === true && !!e2.username?.trim() && !!e2.password && t.verifiedByManagedLogin === true;
-    if (t.source !== `api` && !(t.source === `visible` && managedForm))
-      return `只有站点接口身份或本轮账密登录后核验的页面身份可以更新账号绑定`;
+    let n = e2.effectiveLoginMethod ?? `auto`, r = e2.accountIdentityUserId, hasBinding = !!r || !!e2.accountIdentityUsername || !!e2.accountIdentityEmail, managedForm = n === `form` && e2.formCredentialsSubmitted === true && !!e2.username?.trim() && !!e2.password && t.verifiedByManagedLogin === true;
+    const managedGithub = n === `github` && e2.githubCredentialsSubmitted === true && !!e2.githubUsername?.trim() && !!e2.githubPassword && t.verifiedByManagedLogin === true;
+    const managedToken = n === `token` && !!(e2.session?.accessToken || e2.apiToken) && t.source === `api` && t.verifiedByManagedLogin === true;
+    if (t.identityConflict) return `身份证据冲突，已拒绝更新账号绑定`;
+    if (t.source !== `api` && !(t.source === `visible` && (managedForm || managedGithub)))
+      return `只有站点接口身份或本轮受控登录后核验的页面身份可以更新账号绑定`;
     if (t.userId && e2.siteAccountUserIds?.[t.userId])
       return `该用户 ID 已属于本站其他账号，已拒绝修改本账号绑定`;
+    if (findIdentityOwner(t, e2.siteAccountIdentities))
+      return `该身份已绑定给本站其他账号，已拒绝修改本账号绑定`;
     if (r && t.userId && String(r) !== String(t.userId))
       return `当前用户 ID 与本账号原有绑定不符，已保留原绑定`;
-    if (!r && t.userId && n === `auto`)
+    if (!hasBinding && (t.userId || t.username || t.email) && n === `auto`)
       return `首次绑定需要先识别当前页面的登录方式，并使用本账号的凭据登录`;
-    if (!r && t.userId && n === `form`)
+    if (!hasBinding && (t.userId || t.username || t.email) && n === `form`)
       return managedForm ? null : `首次绑定需要本轮提交此账号的站点密码并确认登录成功`;
-    if (n === `manual` && !r)
-      return t.userId && [t.username, t.email].some((value) => Br(value, e2.username)) ? null : `手动登录首次绑定需要站点接口返回用户 ID，且用户名或完整邮箱与本账号精确一致`;
+    if (!hasBinding && (t.userId || t.username || t.email) && n === `token`)
+      return managedToken ? null : `首次 Token 绑定需要本账号凭据取得的稳定接口身份`;
+    if (!hasBinding && (t.userId || t.username || t.email) && n === `github`)
+      return managedGithub ? null : `首次 GitHub 绑定需要本账号凭据登录后取得的稳定身份`;
+    if (n === `manual` && !hasBinding)
+      return [t.username, t.email].some((value) => Br(value, e2.username)) ? null : `手动登录首次绑定需要站点接口返回用户名或完整邮箱，与本账号精确一致`;
     let i = Ur(t, e2.username, r, {
       knownUsers: e2.siteAccountUserIds,
+      knownIdentities: e2.siteAccountIdentities,
       expectedIdentity: { username: e2.accountIdentityUsername, email: e2.accountIdentityEmail },
       ...n === `github` && e2.githubUsername ? { expectedAliases: [e2.githubUsername] } : {}
     });
@@ -13316,11 +13796,19 @@
             return { ok: false, error: `账号归属已变更，已拒绝写入旧站身份` };
           if (n.effectiveLoginMethod === `manual` && (!current.username?.trim() || current.username.trim() !== n.username?.trim() || (current.loginMethod || `auto`) !== (n.loginMethodPreference || `auto`)))
             return { ok: false, error: `本账号的名称或登录偏好已改变，已拒绝旧页面的手动登录身份` };
-          let r = n.effectiveLoginMethod === `github` && n.githubCredentialsSubmitted === true && !!n.githubUsername?.trim() && !!n.githubPassword && current.githubUsername?.trim() === n.githubUsername.trim() && current.githubPassword === n.githubPassword || n.effectiveLoginMethod === `form` && n.formCredentialsSubmitted === true && !!n.username?.trim() && !!n.password && current.username?.trim() === n.username.trim() && current.password === n.password, { verifiedByManagedLogin: a, ...o } = e2.identity, s = a === true && r ? { ...o, verifiedByManagedLogin: true } : o, c = Io(
+          let r = n.effectiveLoginMethod === `github` && n.githubCredentialsSubmitted === true && !!n.githubUsername?.trim() && !!n.githubPassword && current.githubUsername?.trim() === n.githubUsername.trim() && current.githubPassword === n.githubPassword || n.effectiveLoginMethod === `form` && n.formCredentialsSubmitted === true && !!n.username?.trim() && !!n.password && current.username?.trim() === n.username.trim() && current.password === n.password || n.effectiveLoginMethod === `token` && !!(n.session?.accessToken || n.apiToken) && (n.session?.accessToken ?? n.apiToken) === (current.identity?.session?.accessToken ?? current.apiToken), { verifiedByManagedLogin: a, ...o } = e2.identity, s = a === true && r ? { ...o, verifiedByManagedLogin: true } : o, c = Io(
             {
               ...n,
               formCredentialsSubmitted: n.effectiveLoginMethod === `form` && r,
               accountIdentityUserId: current.identity?.userId,
+              accountIdentityUsername: current.identity?.username,
+              accountIdentityEmail: current.identity?.email,
+              siteAccountIdentities: accounts.filter((account) => account.id !== current.id && account.siteId === current.siteId).map((account) => ({
+                userId: account.identity?.userId,
+                username: account.identity?.username,
+                email: account.identity?.email,
+                label: account.label || account.username
+              })),
               siteAccountUserIds: Object.fromEntries(
                 accounts.filter(
                   (account) => account.id !== current.id && account.siteId === current.siteId && account.identity?.userId
@@ -13740,6 +14228,18 @@
                   (t) => t.id !== e2 && t.siteId === o.siteId && t.identity?.userId === c
                 ).map((e3) => e3.id) : []
               ), u = !!c && !!o.identity?.userId && o.identity.userId !== c;
+              if (!c && findIdentityOwner(
+                s,
+                a.filter((account) => account.id !== e2 && account.siteId === o.siteId).map((account) => ({
+                  ...account.identity,
+                  label: account.label || account.username
+                }))
+              ))
+                throw Error(`本站其他账号已占用该登录标识，已保留原账号数据`);
+              if (i.preserveBinding && !o.identity?.userId && (o.identity?.username || o.identity?.email) && compareAccountIdentity(s, o.username, void 0, {
+                expectedIdentity: o.identity
+              }).match !== `confirmed`)
+                throw Error(`登录标识与本账号原有绑定不符，已保留原绑定`);
               if (i.preserveBinding && (u || l2.size > 0))
                 throw Error(`身份绑定发生冲突，已保留原账号及其他账号的数据`);
               let d = s.verifiedByManagedLogin === true || o.identity?.verifiedByManagedLogin === true && (!c || c === o.identity.userId) && s.source === void 0, f = a.map(

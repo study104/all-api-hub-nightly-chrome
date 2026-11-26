@@ -380,6 +380,7 @@ function wa(e) {
     loginUrl: t,
     pointerMode: e.pointerMode ?? bgSitesState.f.pointerMode,
     successIndicator: n ? bgSitesState.f.successIndicator : e.successIndicator,
+    identitySource: { ...bgSitesState.f.identitySource, ...e.identitySource },
     closeModalSelectors: [
       ...new Set([
         `button >> text=今日关闭`,
@@ -1975,6 +1976,12 @@ export function initializeBackgroundSites(step) {
           ...bgCheckinState.o,
         ],
         successIndicator: `div >> text=账户数据, div >> text=Account Data, a[href="/console/token"], a[href="/console/topup"]`,
+        identitySource: {
+          storageKey: `user`,
+          storageType: `localStorage`,
+          endpoint: `/api/user/self`,
+          pagePath: `/console/personal`,
+        },
         checkin: {
           method: `relogin`,
           url: `/console`,

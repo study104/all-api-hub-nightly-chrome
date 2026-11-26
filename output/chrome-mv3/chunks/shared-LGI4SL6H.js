@@ -9561,6 +9561,65 @@ var appRuntime2 = createUiModuleRuntime({
   storeProperties: {}
 });
 
+// src/shared/account-identity.js
+function readIdentitySource(site) {
+  const source = site.identitySource;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const text = (value) => typeof value === "string" && value.trim() ? value.trim() : void 0;
+  const storageType = (value) => value === "localStorage" || value === "sessionStorage" ? value : void 0;
+  const fields = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+    const result2 = {};
+    for (const field of ["userId", "username", "email", "displayName"]) {
+      const selector = text(value[field]);
+      if (selector && selector.length <= 500) result2[field] = selector;
+    }
+    return Object.keys(result2).length ? result2 : void 0;
+  };
+  const result = {
+    storageKey: text(source.storageKey),
+    storageType: storageType(source.storageType),
+    endpoint: text(source.endpoint),
+    pagePath: text(source.pagePath),
+    pageFields: fields(source.pageFields),
+    pageFieldRules: readIdentityFieldRules(source.pageFieldRules),
+    responseFields: fields(source.responseFields),
+    tokenKey: text(source.tokenKey),
+    tokenStorageType: storageType(source.tokenStorageType),
+    tokenHeader: text(source.tokenHeader),
+    tokenPrefix: typeof source.tokenPrefix === "string" ? source.tokenPrefix : void 0
+  };
+  return result.storageKey || result.endpoint || result.pagePath || result.pageFields || result.responseFields ? result : null;
+}
+function readIdentityFieldRules(rules) {
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) return void 0;
+  const result = {};
+  for (const field of ["userId", "username", "email", "displayName"]) {
+    const rule = rules[field];
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+    if (!["text", "value", "attribute"].includes(rule.kind)) continue;
+    if (rule.kind === "attribute" && !/^data-(?:user-id|uid|username|user-name|email)$/.test(rule.attribute ?? ""))
+      continue;
+    if (["prefix", "suffix"].some(
+      (key) => rule[key] != null && (typeof rule[key] !== "string" || rule[key].length > 80)
+    ))
+      continue;
+    if (rule.stopAt != null && (field !== "userId" || ![",", "，", ";", "；"].includes(rule.stopAt)))
+      continue;
+    result[field] = {
+      kind: rule.kind,
+      ...rule.kind === "attribute" ? { attribute: rule.attribute } : {},
+      ...rule.prefix ? { prefix: rule.prefix } : {},
+      ...rule.suffix ? { suffix: rule.suffix } : {},
+      ...rule.stopAt ? { stopAt: rule.stopAt } : {}
+    };
+  }
+  return Object.keys(result).length ? result : void 0;
+}
+function identitySourceLabel(source) {
+  return source === "api" ? "站点接口" : source === "storage" ? "本地登录态" : source === "visible" ? "页面文本" : "未知来源";
+}
+
 // src/modules/sites/view.js
 var sharedUiRuntime3 = createUiModuleRuntime({
   bindingNames: ["td", "nd", "Ed", "Dd"],
@@ -9912,18 +9971,7 @@ var appRuntime3 = createUiModuleRuntime({
       return typeof e == `string` && e.trim() ? e.trim() : void 0;
     };
     scope.rr = function rr(e) {
-      let t = e.identitySource;
-      if (!t || typeof t != `object` || Array.isArray(t)) return null;
-      let n = t, r = {
-        storageKey: (0, scope.nr)(n.storageKey),
-        storageType: (0, scope.tr)(n.storageType),
-        endpoint: (0, scope.nr)(n.endpoint),
-        tokenKey: (0, scope.nr)(n.tokenKey),
-        tokenStorageType: (0, scope.tr)(n.tokenStorageType),
-        tokenHeader: (0, scope.nr)(n.tokenHeader),
-        tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0
-      };
-      return !r.storageKey && !r.endpoint ? null : r;
+      return readIdentitySource(e);
     };
     scope.ir = function ir(e, t) {
       if (!t) return false;
@@ -9949,7 +9997,7 @@ var appRuntime3 = createUiModuleRuntime({
       }
       n !== `oauth` && n !== `github` && n !== `passkey` && n !== `manual` && n !== `auto` && n !== `token` && (e.selectors?.username?.trim() || t.push(`缺少用户名输入框选择器`), e.selectors?.password?.trim() || t.push(`缺少密码输入框选择器`), e.selectors?.submit?.trim() || t.push(`缺少登录按钮选择器`));
       let r = (0, scope.rr)(e);
-      r?.endpoint && !(0, scope.ir)(e, r.endpoint) && t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`), r?.endpoint && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`), e.logoutApiUrl && !(0, scope.er)(e, e.logoutApiUrl) && t.push(`退出接口必须与登录站点同源`);
+      r?.endpoint && !(0, scope.er)(e, r.endpoint) && !(0, scope.ir)(e, r.endpoint) && t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`), r?.endpoint && !(0, scope.er)(e, r.endpoint) && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`), r?.pagePath && !(0, scope.er)(e, r.pagePath) && t.push(`身份资料页必须与登录站点同源`), e.logoutApiUrl && !(0, scope.er)(e, e.logoutApiUrl) && t.push(`退出接口必须与登录站点同源`);
       let i = e.authBootstrap?.endpoint?.trim();
       if (i) {
         let n2 = null;
@@ -11894,15 +11942,25 @@ var appRuntime3 = createUiModuleRuntime({
             children: [
               (0, scope.W.jsx)(`span`, {
                 className: `text-xs font-medium text-ink-800/70 dark:text-ink-100/60`,
-                children: `身份读取扩展（可选）`
+                children: `统一账号身份识别（可选配置）`
               }),
               (0, scope.W.jsx)(`p`, {
                 className: `text-[11px] leading-relaxed text-ink-800/50 dark:text-ink-100/40`,
-                children: `签到要核对「当前登录的是哪个账号」，而站点身份既不在同源接口、也不在页面文字上时填写 （典型：页面在 orevx.ai、身份在 server.orevx.ai 的接口与 localStorage）。默认关闭； 全部只读，不会写入任何存储，也不会把凭据发去无关主机。跨域接口的响应里带 points （总积分）时，本站余额也复用它读取 —— 不需要额外配置。`
+                children: `所有站点共用同一套身份核验。默认读取当前用户接口和明确的个人资料字段；接口读不到时，可自动进入本站资料页。这里只补充本站的读取位置，用户 ID、完整登录名和邮箱保存在每个账号中。`
+              }),
+              (0, scope.W.jsx)(scope.Q, {
+                label: `身份资料页`,
+                hint: `可选。填写本站显示当前用户 ID 或登录名的页面；接口字段不足时自动进入这里核对。也会识别页面导航中的「个人资料 / 个人设置」入口`,
+                children: (0, scope.W.jsx)(`input`, {
+                  className: scope.$,
+                  placeholder: `/console/personal`,
+                  value: e.identitySource?.pagePath ?? ``,
+                  onChange: (n2) => t({ identitySource: { ...e.identitySource, pagePath: n2.target.value } })
+                })
               }),
               (0, scope.W.jsx)(scope.Q, {
                 label: `身份存储键`,
-                hint: `可选。站点把当前用户信息（JSON）存在哪个键下，如 orevx 的 auth-user`,
+                hint: `可选。本站保存用户信息 JSON 的键名；只用于提供接口需要的当前用户提示，不直接作为登录身份的证明`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `auth-user`,
@@ -11933,8 +11991,8 @@ var appRuntime3 = createUiModuleRuntime({
                 })
               }),
               (0, scope.W.jsx)(scope.Q, {
-                label: `跨域身份接口`,
-                hint: `可选。仅 https，且必须是本站域名本身或其父/子域（orevx.ai ↔ server.orevx.ai）；只读 GET。响应里带 points 时该接口同时用于读取本站余额`,
+                label: `当前用户接口`,
+                hint: `可选。本站接口填写 /api/user/self 这样的路径，使用当前登录会话读取；父 / 子域接口使用 HTTPS 并配置下方 Token。只读取当前用户，不填写用户列表接口`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `https://server.orevx.ai/api/user/me`,
@@ -11944,7 +12002,7 @@ var appRuntime3 = createUiModuleRuntime({
               }),
               (0, scope.W.jsx)(scope.Q, {
                 label: `接口 Token 存储键`,
-                hint: `填了跨域接口时必填。该接口用哪个存储键里的 token 做 Bearer 认证，如 auth-token`,
+                hint: `父 / 子域接口必填。同源接口通常留空；只在本站明确使用 Token 认证时填写，如 auth-token`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `auth-token`,
@@ -11973,6 +12031,95 @@ var appRuntime3 = createUiModuleRuntime({
                     })
                   ]
                 })
+              }),
+              (0, scope.W.jsxs)(`details`, {
+                className: `space-y-3`,
+                children: [
+                  (0, scope.W.jsx)(`summary`, {
+                    className: `cursor-pointer text-xs text-ink-800/60 dark:text-ink-100/50`,
+                    children: `身份字段与已学习的读取位置`
+                  }),
+                  ...[
+                    [`userId`, `用户 ID`],
+                    [`username`, `真实登录名`],
+                    [`email`, `完整邮箱`]
+                  ].flatMap(([field, label]) => [
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}接口字段`,
+                        hint: `可选。本站接口字段名称不常见时填写 JSON 路径，例如 data.account.uid`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder: field === `userId` ? `data.user.id` : `data.user.${field}`,
+                          value: e.identitySource?.responseFields?.[field] ?? ``,
+                          onChange: (n2) => t({
+                            identitySource: {
+                              ...e.identitySource,
+                              responseFields: {
+                                ...e.identitySource?.responseFields,
+                                [field]: n2.target.value
+                              }
+                            }
+                          })
+                        })
+                      },
+                      `${field}-response`
+                    ),
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}页面字段`,
+                        hint: `学习时点选自己的身份值，会自动记录这个位置。也可填写只指向当前用户资料的 CSS 选择器`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder: field === `userId` ? `#profile-user-id` : `#profile-${field}`,
+                          value: e.identitySource?.pageFields?.[field] ?? ``,
+                          onChange: (n2) => t({
+                            identitySource: {
+                              ...e.identitySource,
+                              pageFields: {
+                                ...e.identitySource?.pageFields,
+                                [field]: n2.target.value
+                              },
+                              pageFieldRules: {
+                                ...e.identitySource?.pageFieldRules,
+                                [field]: void 0
+                              }
+                            }
+                          })
+                        })
+                      },
+                      `${field}-page`
+                    ),
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}标签前缀`,
+                        hint: `点选时自动学习。例如页面显示「ID: 123」，这里只保存「ID: 」；账号自己的身份值单独保存`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder: field === `userId` ? `ID: ` : `没有标签时留空`,
+                          value: e.identitySource?.pageFieldRules?.[field]?.prefix ?? ``,
+                          onChange: (n2) => t({
+                            identitySource: {
+                              ...e.identitySource,
+                              pageFieldRules: {
+                                ...e.identitySource?.pageFieldRules,
+                                [field]: {
+                                  kind: `text`,
+                                  ...e.identitySource?.pageFieldRules?.[field],
+                                  prefix: n2.target.value
+                                }
+                              }
+                            }
+                          })
+                        })
+                      },
+                      `${field}-prefix`
+                    )
+                  ])
+                ]
               })
             ]
           }),
@@ -12603,6 +12750,12 @@ var appRuntime3 = createUiModuleRuntime({
           },
           closeModalSelectors: [`button >> text=今日关闭`, `button >> text=关闭公告`, ...scope.Rt],
           successIndicator: `div >> text=账户数据, div >> text=Account Data, a[href="/console/token"], a[href="/console/topup"]`,
+          identitySource: {
+            storageKey: `user`,
+            storageType: `localStorage`,
+            endpoint: `/api/user/self`,
+            pagePath: `/console/personal`
+          },
           checkin: {
             method: `relogin`,
             url: `/console`,
@@ -14278,6 +14431,9 @@ var appRuntime4 = createUiModuleRuntime({
           IDENTITY_ROUTE_UNREACHABLE: `identity-route-unreachable`,
           IDENTITY_EVIDENCE_CONFLICT: `identity-evidence-conflict`,
           IDENTITY_UNCONFIRMED: `identity-unconfirmed`,
+          LOGIN_UNCONFIRMED: `login-unconfirmed`,
+          LOGIN_REJECTED: `login-rejected`,
+          ACCOUNT_COMPLETION_REQUIRED: `account-completion-required`,
           AUTH_EXPIRED: `auth-expired`,
           SESSION_SWITCH_FAILED: `session-switch-failed`,
           SITE_UNAVAILABLE: `site-unavailable`,
@@ -14358,6 +14514,31 @@ var appRuntime4 = createUiModuleRuntime({
               `若冲突持续存在，核对本账号的登录凭据，并确认站点页面显示的是目标账号`
             ]
           },
+          [scope.Z.LOGIN_UNCONFIRMED]: {
+            title: `尚未确认登录完成`,
+            detail: `已经发起登录或第三方授权，但本轮尚未取得足够的当前会话证据。页面可能仍在授权、验证、加载或补充资料阶段；点击登录入口本身不能证明已经登录，扩展尚未继续签到。`,
+            nextActions: [
+              `切到本站标签页，确认第三方授权已经返回本站，并查看是否还需要验证码或补充资料`,
+              `展开账号详情，查看当前页面、用户信息读取来源和最后的核验原因`,
+              `若本站已经显示自己的用户 ID 或唯一登录名，可在「学习本站流程」的浮窗中点选该身份字段，保存本站共用的读取位置`
+            ]
+          },
+          [scope.Z.LOGIN_REJECTED]: {
+            title: `站点明确报告登录失败`,
+            detail: `登录页面返回了明确的错误提示，本轮没有建立可确认的登录会话。具体原因以站点返回的原话为准。`,
+            nextActions: [
+              `展开账号详情，查看「登录状态核验[login_rejected]」后的站点错误提示`,
+              `核对本账号保存的登录方式和凭据，按站点错误提示处理后重新执行`
+            ]
+          },
+          [scope.Z.ACCOUNT_COMPLETION_REQUIRED]: {
+            title: `登录后仍需完成账号设置`,
+            detail: `第三方授权后，本站仍显示注册、绑定邮箱或补充资料的步骤。当前还没有进入完整的本站账号会话，因此本轮尚未继续签到。`,
+            nextActions: [
+              `切到本站标签页，查看仍需完成的注册、绑定或资料填写步骤`,
+              `完成本站要求后重新执行，扩展会重新读取当前用户身份并核对目标账号`
+            ]
+          },
           [scope.Z.AUTH_EXPIRED]: {
             title: `登录状态已失效`,
             detail: `站点不再认这个会话（cookie 过期、被别处登录顶下线，或站点主动清退了会话）。`,
@@ -14368,7 +14549,7 @@ var appRuntime4 = createUiModuleRuntime({
           },
           [scope.Z.SESSION_SWITCH_FAILED]: {
             title: `无法安全切换到目标账号`,
-            detail: `站点 cookie 没清干净，或当前会话仍是别的账号。扩展在这里停下是故意的：确认不了身份就继续签到，会把奖励记到错账号上。`,
+            detail: `本站会话尚未确认已经结束，或换号后仍是其他账号。当前页面和身份读取结果没有形成足够的退出或换号证据，因此本轮尚未继续登录和签到。`,
             nextActions: [
               `确认当前加载的是最新版扩展（需要 Cookie 权限），然后在扩展管理页点一次「重新加载」`,
               `展开账号详情，看 Log 里是「清理失败」还是「仍有残留」，两者处理方式不同`,
@@ -14503,7 +14684,7 @@ var appRuntime4 = createUiModuleRuntime({
         scope.oa = [
           {
             code: scope.Z.IDENTITY_EVIDENCE_CONFLICT,
-            patterns: [/身份证据冲突/, /不同用户\s*ID/i]
+            patterns: [/登录状态核验\[identity_conflict\]/, /身份证据冲突/, /不同用户\s*ID/i]
           },
           {
             code: scope.Z.ALREADY_DONE,
@@ -14553,7 +14734,9 @@ var appRuntime4 = createUiModuleRuntime({
               /OAuth 返回后(?:仍无法确认当前身份|核对到当前登录的是别的账号)/,
               /无法确认浏览器里登录的是不是本账号/,
               /当前浏览器登录的是别的账号/,
-              /已自动切换过 GitHub 账号/
+              /已自动切换过 GitHub 账号/,
+              /登录状态核验\[(?:identity_unstable|identity_verifying)\]/,
+              /当前登录身份[^，。；\n]{0,24}(?:发生变化|未形成连续一致|尚未形成连续一致)/
             ]
           },
           {
@@ -14566,7 +14749,33 @@ var appRuntime4 = createUiModuleRuntime({
               /captcha/i,
               /等待你在/,
               /授权页/,
-              /(?:请完成|请先完成|需要你|等待你)[^，。；\n]{0,10}(?:滑块|图形|行为|智能)?(?:验证|校验)/
+              /(?:请完成|请先完成|需要你|等待你)[^，。；\n]{0,10}(?:滑块|图形|行为|智能)?(?:验证|校验)/,
+              /登录状态核验\[(?:second_factor_pending|challenge_pending)\]/
+            ]
+          },
+          {
+            code: scope.Z.ACCOUNT_COMPLETION_REQUIRED,
+            patterns: [
+              /登录状态核验\[account_completion_required\]/,
+              /授权后仍需完成注册、绑定或补充账号资料/
+            ]
+          },
+          {
+            code: scope.Z.LOGIN_REJECTED,
+            patterns: [/登录状态核验\[login_rejected\]/, /站点返回登录失败：/]
+          },
+          {
+            code: scope.Z.LOGIN_UNCONFIRMED,
+            patterns: [
+              /登录状态核验\[(?:oauth_pending|login_form_visible|login_entry_visible|success_evidence_missing|account_shell_unverified|session_token_missing|session_probe_rejected|identity_api_unavailable|identity_response_unusable)\]/,
+              /OAuth\s*尚未返回本站/i,
+              /未取得可见登录成功控件或连续一致的当前用户身份/,
+              /OAuth\s*授权后缺少明确的登录成功证据/i,
+              /(?:重新)?登录后缺少明确(?:的)?(?:登录)?成功证据/,
+              /登录成功(?:尚未|未能|无法)确认/,
+              /登录完成(?:尚未|未能|无法)确认/,
+              /当前登录状态(?:尚未|未能|无法)确认/,
+              /登录成功证据(?:不足|缺失|未取得)/
             ]
           },
           {
@@ -14585,7 +14794,8 @@ var appRuntime4 = createUiModuleRuntime({
               /无法退出当前(?:站点会话|账号)/,
               /无法安全切换.*账号/,
               /退出操作没有真正结束会话/,
-              /退出后会话仍然有效/
+              /退出后会话仍然有效/,
+              /退出后的登录状态尚未确认/
             ]
           },
           {
@@ -20209,6 +20419,47 @@ var appRuntime6 = createUiModuleRuntime({
                   (e2) => (0, scope.W.jsx)(`option`, { value: e2.id, children: e2.name }, e2.id)
                 )
               })
+            }),
+            i && (0, scope.W.jsxs)(`section`, {
+              "aria-label": `本站身份绑定`,
+              className: `rounded-xl border border-black/5 bg-ink-50 px-3 py-3 text-xs dark:border-white/10 dark:bg-ink-900/60`,
+              children: [
+                (0, scope.W.jsx)(`p`, {
+                  className: `font-medium text-ink-800 dark:text-ink-100`,
+                  children: `本站身份绑定`
+                }),
+                (0, scope.W.jsx)(`dl`, {
+                  className: `mt-2 space-y-1.5`,
+                  children: [
+                    [`本站用户 ID`, i.identity?.userId || `未绑定`],
+                    ...i.identity?.username ? [[`本站登录名`, i.identity.username]] : [],
+                    ...i.identity?.email ? [[`本站邮箱`, i.identity.email]] : [],
+                    ...i.identity?.source ? [[`身份来源`, identitySourceLabel(i.identity.source)]] : []
+                  ].map(
+                    ([label, value]) => (0, scope.W.jsxs)(
+                      `div`,
+                      {
+                        className: `flex gap-3`,
+                        children: [
+                          (0, scope.W.jsx)(`dt`, {
+                            className: `w-24 shrink-0 text-ink-800/60 dark:text-ink-100/60`,
+                            children: label
+                          }),
+                          (0, scope.W.jsx)(`dd`, {
+                            className: `min-w-0 break-all text-ink-800 dark:text-ink-100`,
+                            children: value
+                          })
+                        ]
+                      },
+                      label
+                    )
+                  )
+                }),
+                (0, scope.W.jsx)(`p`, {
+                  className: `mt-2 leading-relaxed text-ink-800/60 dark:text-ink-100/60`,
+                  children: i.identity?.userId || i.identity?.username || i.identity?.email ? `这是本账号已保存的本站身份。执行时会重新读取当前登录会话，并核对该绑定。` : `完成本账号登录并核验身份后，会保存本站用户 ID 或完整登录标识。也可以通过学习本站流程记录身份读取位置。`
+                })
+              ]
             }),
             !i && entryMode === `batch` && (0, scope.W.jsx)(AccountBatchContent, { batch }),
             (i || entryMode === `single`) && (0, scope.W.jsxs)(`div`, {

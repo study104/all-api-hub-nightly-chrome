@@ -125,3 +125,92 @@ test('diagnostics: login and Token identity failures are classified as unconfirm
     assert.match(result.nextActions[0], /当前用户 ID.*目标用户 ID/);
   }
 });
+
+test('diagnostics: Orevx OAuth completion without login evidence has a concrete failure category', async () => {
+  const scope = await classifier();
+  const result = scope.ua('OAuth 授权后缺少明确的登录成功证据', [
+    '发现登录表单，需要重新登录',
+    '已勾选登录协议与隐私政策',
+    '第三方登录入口已可见，无需展开账密表单',
+    '已按账号选择点击「Google」登录入口: Sign in with Google',
+    '登录后缺少明确成功证据，可能凭据错误或站点需要补充成功标志',
+  ]);
+  assert.equal(result.code, scope.Z.LOGIN_UNCONFIRMED);
+  assert.equal(result.title, '尚未确认登录完成');
+  assert.match(result.detail, /当前会话证据/);
+  assert.match(result.nextActions[0], /第三方授权.*返回本站/);
+  assert.doesNotMatch(result.detail, /凭据错误|密码错误/);
+});
+
+test('diagnostics: latest missing login evidence outranks an earlier login form or selector log', async () => {
+  const scope = await classifier();
+  const result = scope.ua('本轮执行失败', [
+    '找不到控件: #old-login-button',
+    '发现登录表单，需要重新登录',
+    '登录后缺少明确成功证据，可能凭据错误或站点需要补充成功标志',
+  ]);
+  assert.equal(result.code, scope.Z.LOGIN_UNCONFIRMED);
+});
+
+test('diagnostics: an active verification requirement remains manual despite missing login evidence', async () => {
+  const scope = await classifier();
+  const result = scope.ua('登录成功尚未确认，页面要求验证码', [
+    'OAuth 授权后缺少明确的登录成功证据',
+  ]);
+  assert.equal(result.code, scope.Z.MANUAL_REQUIRED);
+});
+
+test('diagnostics: shared login state reasons identify the actual pending or failed step', async () => {
+  const scope = await classifier();
+  const cases = [
+    ['oauth_pending', scope.Z.LOGIN_UNCONFIRMED],
+    ['login_form_visible', scope.Z.LOGIN_UNCONFIRMED],
+    ['login_entry_visible', scope.Z.LOGIN_UNCONFIRMED],
+    ['success_evidence_missing', scope.Z.LOGIN_UNCONFIRMED],
+    ['account_shell_unverified', scope.Z.LOGIN_UNCONFIRMED],
+    ['session_token_missing', scope.Z.LOGIN_UNCONFIRMED],
+    ['session_probe_rejected', scope.Z.LOGIN_UNCONFIRMED],
+    ['identity_api_unavailable', scope.Z.LOGIN_UNCONFIRMED],
+    ['identity_response_unusable', scope.Z.LOGIN_UNCONFIRMED],
+    ['identity_verifying', scope.Z.IDENTITY_UNCONFIRMED],
+    ['identity_unstable', scope.Z.IDENTITY_UNCONFIRMED],
+    ['identity_conflict', scope.Z.IDENTITY_EVIDENCE_CONFLICT],
+    ['challenge_pending', scope.Z.MANUAL_REQUIRED],
+    ['second_factor_pending', scope.Z.MANUAL_REQUIRED],
+    ['account_completion_required', scope.Z.ACCOUNT_COMPLETION_REQUIRED],
+    ['login_rejected', scope.Z.LOGIN_REJECTED],
+  ];
+  for (const [reason, expected] of cases) {
+    const result = scope.ua('本轮执行失败', [
+      '找不到控件: #old-login-button',
+      `登录状态核验[${reason}]：当前步骤尚未完成`,
+    ]);
+    assert.equal(result.code, expected, reason);
+  }
+});
+
+test('diagnostics: completing an OAuth account is distinguished from missing login evidence', async () => {
+  const scope = await classifier();
+  const result = scope.ua(
+    'OAuth 授权后缺少明确的登录成功证据：授权后仍需完成注册、绑定或补充账号资料',
+  );
+  assert.equal(result.code, scope.Z.ACCOUNT_COMPLETION_REQUIRED);
+  assert.match(result.title, /账号设置/);
+});
+
+test('diagnostics: final login rejection preserves the server error and ignores an old selector failure', async () => {
+  const scope = await classifier();
+  const failure = '登录后缺少明确成功证据：站点返回登录失败：用户名或密码错误';
+  const result = scope.ua(failure, ['找不到控件: #old-login-button']);
+  assert.equal(result.code, scope.Z.LOGIN_REJECTED);
+  assert.equal(result.message, failure);
+});
+
+test('diagnostics: missing login evidence after logout is a session-switch failure', async () => {
+  const scope = await classifier();
+  const result = scope.ua('退出后的登录状态尚未确认：没有取得当前会话证据。已停止第二次登录。', [
+    '登录状态核验[success_evidence_missing]：未取得可见登录成功控件',
+  ]);
+  assert.equal(result.code, scope.Z.SESSION_SWITCH_FAILED);
+  assert.match(result.detail, /退出或换号证据/);
+});

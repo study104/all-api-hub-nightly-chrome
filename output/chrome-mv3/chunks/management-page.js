@@ -1,8 +1,8 @@
 import {
   ManagementApp
-} from "./shared-EMVCZFMU.js";
+} from "./shared-IWQTZE5O.js";
 import "./shared-CR5LZACA.js";
-import "./shared-7HSGGT63.js";
+import "./shared-LGI4SL6H.js";
 import {
   g,
   v

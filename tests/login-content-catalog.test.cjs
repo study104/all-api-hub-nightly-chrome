@@ -145,6 +145,7 @@ function page(controls = [], { native = false, heading = '登录' } = {}) {
     body.children.unshift(form);
   }
   return {
+    title: heading,
     body,
     dispatchEvent: () => true,
     addEventListener() {},
@@ -544,7 +545,7 @@ test('login catalog: unnamed unknown provider controls require one unambiguous s
   assert.equal(current.scope.findSelectedLoginControl(selected, 'oauth'), null);
 });
 
-test('page login: visible explicit account entries bypass the authenticated-session polling before acting', async () => {
+test('page login: visible explicit account entries first read the current session before using the saved method', async () => {
   for (const [method, provider, label] of [
     ['github', 'github', 'GitHub'],
     ['oauth', 'google', 'Google'],
@@ -553,6 +554,8 @@ test('page login: visible explicit account entries bypass the authenticated-sess
   ]) {
     const current = fixture({ document: page([new Button(label)]) });
     let brCalls = 0;
+    let identityProbesBeforeAction = 0;
+    let loginActionStarted = false;
     const events = [];
     Object.assign(current.scope, {
       w: async (ms) => current.tick(ms),
@@ -565,14 +568,22 @@ test('page login: visible explicit account entries bypass the authenticated-sess
         brCalls += 1;
         throw new Error('Explicit visible login entry must bypass session polling');
       },
-      qi: async () =>
-        method === 'manual' ? { userId: '299', email: 'alice@example.test', source: 'api' } : null,
+      qi: async () => {
+        if (!loginActionStarted) identityProbesBeforeAction += 1;
+        return loginActionStarted && method === 'manual'
+          ? { userId: '299', email: 'alice@example.test', source: 'api' }
+          : null;
+      },
       Gi: () => null,
       B: async () => null,
-      M: async (control) => events.push(`click:${control.innerText}`),
+      M: async (control) => {
+        loginActionStarted = true;
+        events.push(`click:${control.innerText}`);
+      },
       mr: async (site, log, selectedMethod) => {
         assert.equal(site.loginEntry.provider, provider);
         assert.equal(selectedMethod, method);
+        loginActionStarted = true;
         events.push(`provider-entry:${method}`);
       },
       vr: async (site, log, hooks, selectedMethod) => {
@@ -631,6 +642,7 @@ test('page login: visible explicit account entries bypass the authenticated-sess
       },
     );
     assert.equal(brCalls, 0, method);
+    assert.ok(identityProbesBeforeAction > 0, method);
     assert.doesNotMatch(result?.message ?? '', /session polling/, method);
     if (method === 'manual') {
       assert.ok(events.includes(`click:${label}`));
@@ -658,7 +670,8 @@ async function runManual({
   const saved = [],
     handoffs = [],
     events = [];
-  let readCount = 0;
+  let readCount = 0,
+    manualLoginCompleted = authenticated;
   Object.assign(current.scope, {
     w: async (ms) => current.tick(ms),
     $: 2500,
@@ -672,6 +685,7 @@ async function runManual({
       events.push(`entry-click:${control.innerText}`);
     },
     qi: async () => {
+      if (stage === 'login' && !manualLoginCompleted) return null;
       const identity = identities[Math.min(readCount, identities.length - 1)];
       readCount += 1;
       return identity ? { ...identity } : null;
@@ -718,6 +732,7 @@ async function runManual({
           async waitForManualLogin(message) {
             handoffs.push(message);
             events.push('manual-wait');
+            manualLoginCompleted = true;
           },
         }
       : {}),

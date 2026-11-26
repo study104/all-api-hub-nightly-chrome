@@ -1,5 +1,6 @@
 /** src/modules/sites/view.js: 功能模块实现，保留发布版本的符号以便逐步恢复命名。 */
 import { createUiModuleRuntime, createUiScope, initializeUiScope } from '../../shared/ui-scope.js';
+import { readIdentitySource } from '../../shared/account-identity.js';
 
 // 站点配置、书签导入、适配校验与站点视图 — sharedUi published scope.
 
@@ -401,19 +402,7 @@ export const appRuntime = createUiModuleRuntime({
       return typeof e == `string` && e.trim() ? e.trim() : void 0;
     };
     scope.rr = function rr(e) {
-      let t = e.identitySource;
-      if (!t || typeof t != `object` || Array.isArray(t)) return null;
-      let n = t,
-        r = {
-          storageKey: (0, scope.nr)(n.storageKey),
-          storageType: (0, scope.tr)(n.storageType),
-          endpoint: (0, scope.nr)(n.endpoint),
-          tokenKey: (0, scope.nr)(n.tokenKey),
-          tokenStorageType: (0, scope.tr)(n.tokenStorageType),
-          tokenHeader: (0, scope.nr)(n.tokenHeader),
-          tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0,
-        };
-      return !r.storageKey && !r.endpoint ? null : r;
+      return readIdentitySource(e);
     };
     scope.ir = function ir(e, t) {
       if (!t) return !1;
@@ -452,9 +441,14 @@ export const appRuntime = createUiModuleRuntime({
         e.selectors?.submit?.trim() || t.push(`缺少登录按钮选择器`));
       let r = (0, scope.rr)(e);
       (r?.endpoint &&
+        !(0, scope.er)(e, r.endpoint) &&
         !(0, scope.ir)(e, r.endpoint) &&
         t.push(`跨域身份接口必须使用 HTTPS，且主机必须是登录站点域名的自身或子域`),
-        r?.endpoint && !r.tokenKey && t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`),
+        r?.endpoint &&
+          !(0, scope.er)(e, r.endpoint) &&
+          !r.tokenKey &&
+          t.push(`跨域身份接口需要同时填写 token 存储键（tokenKey）`),
+        r?.pagePath && !(0, scope.er)(e, r.pagePath) && t.push(`身份资料页必须与登录站点同源`),
         e.logoutApiUrl &&
           !(0, scope.er)(e, e.logoutApiUrl) &&
           t.push(`退出接口必须与登录站点同源`));
@@ -2958,15 +2952,26 @@ export const appRuntime = createUiModuleRuntime({
             children: [
               (0, scope.W.jsx)(`span`, {
                 className: `text-xs font-medium text-ink-800/70 dark:text-ink-100/60`,
-                children: `身份读取扩展（可选）`,
+                children: `统一账号身份识别（可选配置）`,
               }),
               (0, scope.W.jsx)(`p`, {
                 className: `text-[11px] leading-relaxed text-ink-800/50 dark:text-ink-100/40`,
-                children: `签到要核对「当前登录的是哪个账号」，而站点身份既不在同源接口、也不在页面文字上时填写 （典型：页面在 orevx.ai、身份在 server.orevx.ai 的接口与 localStorage）。默认关闭； 全部只读，不会写入任何存储，也不会把凭据发去无关主机。跨域接口的响应里带 points （总积分）时，本站余额也复用它读取 —— 不需要额外配置。`,
+                children: `所有站点共用同一套身份核验。默认读取当前用户接口和明确的个人资料字段；接口读不到时，可自动进入本站资料页。这里只补充本站的读取位置，用户 ID、完整登录名和邮箱保存在每个账号中。`,
+              }),
+              (0, scope.W.jsx)(scope.Q, {
+                label: `身份资料页`,
+                hint: `可选。填写本站显示当前用户 ID 或登录名的页面；接口字段不足时自动进入这里核对。也会识别页面导航中的「个人资料 / 个人设置」入口`,
+                children: (0, scope.W.jsx)(`input`, {
+                  className: scope.$,
+                  placeholder: `/console/personal`,
+                  value: e.identitySource?.pagePath ?? ``,
+                  onChange: (n) =>
+                    t({ identitySource: { ...e.identitySource, pagePath: n.target.value } }),
+                }),
               }),
               (0, scope.W.jsx)(scope.Q, {
                 label: `身份存储键`,
-                hint: `可选。站点把当前用户信息（JSON）存在哪个键下，如 orevx 的 auth-user`,
+                hint: `可选。本站保存用户信息 JSON 的键名；只用于提供接口需要的当前用户提示，不直接作为登录身份的证明`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `auth-user`,
@@ -2999,8 +3004,8 @@ export const appRuntime = createUiModuleRuntime({
                 }),
               }),
               (0, scope.W.jsx)(scope.Q, {
-                label: `跨域身份接口`,
-                hint: `可选。仅 https，且必须是本站域名本身或其父/子域（orevx.ai ↔ server.orevx.ai）；只读 GET。响应里带 points 时该接口同时用于读取本站余额`,
+                label: `当前用户接口`,
+                hint: `可选。本站接口填写 /api/user/self 这样的路径，使用当前登录会话读取；父 / 子域接口使用 HTTPS 并配置下方 Token。只读取当前用户，不填写用户列表接口`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `https://server.orevx.ai/api/user/me`,
@@ -3011,7 +3016,7 @@ export const appRuntime = createUiModuleRuntime({
               }),
               (0, scope.W.jsx)(scope.Q, {
                 label: `接口 Token 存储键`,
-                hint: `填了跨域接口时必填。该接口用哪个存储键里的 token 做 Bearer 认证，如 auth-token`,
+                hint: `父 / 子域接口必填。同源接口通常留空；只在本站明确使用 Token 认证时填写，如 auth-token`,
                 children: (0, scope.W.jsx)(`input`, {
                   className: scope.$,
                   placeholder: `auth-token`,
@@ -3042,6 +3047,99 @@ export const appRuntime = createUiModuleRuntime({
                     }),
                   ],
                 }),
+              }),
+              (0, scope.W.jsxs)(`details`, {
+                className: `space-y-3`,
+                children: [
+                  (0, scope.W.jsx)(`summary`, {
+                    className: `cursor-pointer text-xs text-ink-800/60 dark:text-ink-100/50`,
+                    children: `身份字段与已学习的读取位置`,
+                  }),
+                  ...[
+                    [`userId`, `用户 ID`],
+                    [`username`, `真实登录名`],
+                    [`email`, `完整邮箱`],
+                  ].flatMap(([field, label]) => [
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}接口字段`,
+                        hint: `可选。本站接口字段名称不常见时填写 JSON 路径，例如 data.account.uid`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder: field === `userId` ? `data.user.id` : `data.user.${field}`,
+                          value: e.identitySource?.responseFields?.[field] ?? ``,
+                          onChange: (n) =>
+                            t({
+                              identitySource: {
+                                ...e.identitySource,
+                                responseFields: {
+                                  ...e.identitySource?.responseFields,
+                                  [field]: n.target.value,
+                                },
+                              },
+                            }),
+                        }),
+                      },
+                      `${field}-response`,
+                    ),
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}页面字段`,
+                        hint: `学习时点选自己的身份值，会自动记录这个位置。也可填写只指向当前用户资料的 CSS 选择器`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder:
+                            field === `userId` ? `#profile-user-id` : `#profile-${field}`,
+                          value: e.identitySource?.pageFields?.[field] ?? ``,
+                          onChange: (n) =>
+                            t({
+                              identitySource: {
+                                ...e.identitySource,
+                                pageFields: {
+                                  ...e.identitySource?.pageFields,
+                                  [field]: n.target.value,
+                                },
+                                pageFieldRules: {
+                                  ...e.identitySource?.pageFieldRules,
+                                  [field]: void 0,
+                                },
+                              },
+                            }),
+                        }),
+                      },
+                      `${field}-page`,
+                    ),
+                    (0, scope.W.jsx)(
+                      scope.Q,
+                      {
+                        label: `${label}标签前缀`,
+                        hint: `点选时自动学习。例如页面显示「ID: 123」，这里只保存「ID: 」；账号自己的身份值单独保存`,
+                        children: (0, scope.W.jsx)(`input`, {
+                          className: scope.$,
+                          placeholder: field === `userId` ? `ID: ` : `没有标签时留空`,
+                          value: e.identitySource?.pageFieldRules?.[field]?.prefix ?? ``,
+                          onChange: (n) =>
+                            t({
+                              identitySource: {
+                                ...e.identitySource,
+                                pageFieldRules: {
+                                  ...e.identitySource?.pageFieldRules,
+                                  [field]: {
+                                    kind: `text`,
+                                    ...e.identitySource?.pageFieldRules?.[field],
+                                    prefix: n.target.value,
+                                  },
+                                },
+                              },
+                            }),
+                        }),
+                      },
+                      `${field}-prefix`,
+                    ),
+                  ]),
+                ],
               }),
             ],
           }),
@@ -3786,6 +3884,12 @@ export const appRuntime = createUiModuleRuntime({
           },
           closeModalSelectors: [`button >> text=今日关闭`, `button >> text=关闭公告`, ...scope.Rt],
           successIndicator: `div >> text=账户数据, div >> text=Account Data, a[href="/console/token"], a[href="/console/topup"]`,
+          identitySource: {
+            storageKey: `user`,
+            storageType: `localStorage`,
+            endpoint: `/api/user/self`,
+            pagePath: `/console/personal`,
+          },
           checkin: {
             method: `relogin`,
             url: `/console`,

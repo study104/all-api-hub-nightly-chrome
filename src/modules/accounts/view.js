@@ -1,5 +1,6 @@
 /** src/modules/accounts/view.js: 功能模块实现，保留发布版本的符号以便逐步恢复命名。 */
 import { createUiModuleRuntime, createUiScope, initializeUiScope } from '../../shared/ui-scope.js';
+import { identitySourceLabel } from '../../shared/account-identity.js';
 import { parseAccountBatch } from './batch-input.js';
 export { parseAccountBatch } from './batch-input.js';
 
@@ -2393,6 +2394,53 @@ export const appRuntime = createUiModuleRuntime({
                 ),
               }),
             }),
+            i &&
+              (0, scope.W.jsxs)(`section`, {
+                'aria-label': `本站身份绑定`,
+                className: `rounded-xl border border-black/5 bg-ink-50 px-3 py-3 text-xs dark:border-white/10 dark:bg-ink-900/60`,
+                children: [
+                  (0, scope.W.jsx)(`p`, {
+                    className: `font-medium text-ink-800 dark:text-ink-100`,
+                    children: `本站身份绑定`,
+                  }),
+                  (0, scope.W.jsx)(`dl`, {
+                    className: `mt-2 space-y-1.5`,
+                    children: [
+                      [`本站用户 ID`, i.identity?.userId || `未绑定`],
+                      ...(i.identity?.username ? [[`本站登录名`, i.identity.username]] : []),
+                      ...(i.identity?.email ? [[`本站邮箱`, i.identity.email]] : []),
+                      ...(i.identity?.source
+                        ? [[`身份来源`, identitySourceLabel(i.identity.source)]]
+                        : []),
+                    ].map(([label, value]) =>
+                      (0, scope.W.jsxs)(
+                        `div`,
+                        {
+                          className: `flex gap-3`,
+                          children: [
+                            (0, scope.W.jsx)(`dt`, {
+                              className: `w-24 shrink-0 text-ink-800/60 dark:text-ink-100/60`,
+                              children: label,
+                            }),
+                            (0, scope.W.jsx)(`dd`, {
+                              className: `min-w-0 break-all text-ink-800 dark:text-ink-100`,
+                              children: value,
+                            }),
+                          ],
+                        },
+                        label,
+                      ),
+                    ),
+                  }),
+                  (0, scope.W.jsx)(`p`, {
+                    className: `mt-2 leading-relaxed text-ink-800/60 dark:text-ink-100/60`,
+                    children:
+                      i.identity?.userId || i.identity?.username || i.identity?.email
+                        ? `这是本账号已保存的本站身份。执行时会重新读取当前登录会话，并核对该绑定。`
+                        : `完成本账号登录并核验身份后，会保存本站用户 ID 或完整登录标识。也可以通过学习本站流程记录身份读取位置。`,
+                  }),
+                ],
+              }),
             !i && entryMode === `batch` && (0, scope.W.jsx)(AccountBatchContent, { batch }),
             (i || entryMode === `single`) &&
               (0, scope.W.jsxs)(`div`, {

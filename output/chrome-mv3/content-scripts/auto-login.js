@@ -1226,6 +1226,1538 @@
     };
   }
 
+  // src/shared/account-identity.js
+  function readIdentitySource(site) {
+    const source = site.identitySource;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    const text = (value) => typeof value === "string" && value.trim() ? value.trim() : void 0;
+    const storageType = (value) => value === "localStorage" || value === "sessionStorage" ? value : void 0;
+    const fields = (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+      const result2 = {};
+      for (const field of ["userId", "username", "email", "displayName"]) {
+        const selector = text(value[field]);
+        if (selector && selector.length <= 500) result2[field] = selector;
+      }
+      return Object.keys(result2).length ? result2 : void 0;
+    };
+    const result = {
+      storageKey: text(source.storageKey),
+      storageType: storageType(source.storageType),
+      endpoint: text(source.endpoint),
+      pagePath: text(source.pagePath),
+      pageFields: fields(source.pageFields),
+      pageFieldRules: readIdentityFieldRules(source.pageFieldRules),
+      responseFields: fields(source.responseFields),
+      tokenKey: text(source.tokenKey),
+      tokenStorageType: storageType(source.tokenStorageType),
+      tokenHeader: text(source.tokenHeader),
+      tokenPrefix: typeof source.tokenPrefix === "string" ? source.tokenPrefix : void 0
+    };
+    return result.storageKey || result.endpoint || result.pagePath || result.pageFields || result.responseFields ? result : null;
+  }
+  function readIdentityFieldRules(rules) {
+    if (!rules || typeof rules !== "object" || Array.isArray(rules)) return void 0;
+    const result = {};
+    for (const field of ["userId", "username", "email", "displayName"]) {
+      const rule = rules[field];
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+      if (!["text", "value", "attribute"].includes(rule.kind)) continue;
+      if (rule.kind === "attribute" && !/^data-(?:user-id|uid|username|user-name|email)$/.test(rule.attribute ?? ""))
+        continue;
+      if (["prefix", "suffix"].some(
+        (key) => rule[key] != null && (typeof rule[key] !== "string" || rule[key].length > 80)
+      ))
+        continue;
+      if (rule.stopAt != null && (field !== "userId" || ![",", "，", ";", "；"].includes(rule.stopAt)))
+        continue;
+      result[field] = {
+        kind: rule.kind,
+        ...rule.kind === "attribute" ? { attribute: rule.attribute } : {},
+        ...rule.prefix ? { prefix: rule.prefix } : {},
+        ...rule.suffix ? { suffix: rule.suffix } : {},
+        ...rule.stopAt ? { stopAt: rule.stopAt } : {}
+      };
+    }
+    return Object.keys(result).length ? result : void 0;
+  }
+  function normalizeIdentityFieldValue(field, value) {
+    if (typeof value !== "string") return void 0;
+    const text = value.trim();
+    if (!text || text.length > 128 || /[\r\n*•●]/.test(text)) return void 0;
+    if (field === "userId") return /^[\w.:-]{1,128}$/.test(text) ? text : void 0;
+    if (field === "email")
+      return /^[\p{L}\p{N}._+%-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+$/u.test(text) ? text : void 0;
+    if (field === "username")
+      return /^[\p{L}\p{N}@][\p{L}\p{N}._+@'-]{1,79}$/u.test(text) ? text : void 0;
+    return field === "displayName" ? text : void 0;
+  }
+  function parseVisibleUserIdLabel(text) {
+    if (typeof text !== "string") return null;
+    const match = text.replace(/\s+/g, " ").trim().match(
+      /^((?:用户\s*ID|User\s*ID|UID|ID)(?:\s*[:：#]\s*|\s+))([\w.:-]{1,128})(?:\s*([,，;；])\s*(.+))?$/i
+    );
+    return match ? { prefix: match[1], value: match[2], ...match[3] ? { stopAt: match[3] } : {} } : null;
+  }
+  function readIdentityField(node, field, rule = {}) {
+    if (!node || !isIdentityElementVisible(node)) return void 0;
+    if (node.closest?.("form")?.querySelector?.('input[type="password"]')) return void 0;
+    if (node.closest?.('[role="grid"], [role="list"], [role="listitem"], .lottery-sidebar'))
+      return void 0;
+    const table = node.closest?.('table, [role="table"]');
+    if (table?.querySelector?.("thead") && table.querySelectorAll?.("tbody tr")?.length > 1)
+      return void 0;
+    for (let current = node; current && current.tagName !== "BODY"; current = current.parentElement) {
+      const metadata = [
+        current.id,
+        current.className,
+        current.getAttribute?.("data-testid"),
+        current.getAttribute?.("aria-label")
+      ].join(" ");
+      if (/用户列表|成员列表|邀请|排行榜|中奖|(?:^|[\s_-])(?:user[-_ ]list|member[-_ ]list|invitation|referral|leaderboard|winners?)(?:$|[\s_-])/i.test(
+        metadata
+      ))
+        return void 0;
+    }
+    const tag = node.tagName?.toUpperCase();
+    const control = /^(?:INPUT|TEXTAREA)$/.test(tag ?? "");
+    if (control && (!(node.readOnly || node.disabled || node.hasAttribute?.("readonly") || node.hasAttribute?.("disabled")) || /^(?:password|hidden)$/i.test(node.type ?? "")))
+      return void 0;
+    let value;
+    if (rule.kind === "attribute") value = node.getAttribute?.(rule.attribute);
+    else if (rule.kind === "value" || !rule.kind && control) value = control ? node.value : null;
+    else
+      value = (!rule.kind && field === "userId" ? node.getAttribute?.("data-user-id") : null) ?? node.innerText ?? node.textContent;
+    if (typeof value !== "string") return void 0;
+    value = value.replace(/\s+/g, " ").trim();
+    if (rule.prefix) {
+      if (!value.startsWith(rule.prefix)) return void 0;
+      value = value.slice(rule.prefix.length);
+    }
+    if (rule.suffix) {
+      if (!value.endsWith(rule.suffix)) return void 0;
+      value = value.slice(0, -rule.suffix.length);
+    }
+    if (rule.stopAt) {
+      const stop = value.indexOf(rule.stopAt);
+      if (stop >= 0) value = value.slice(0, stop).trim();
+    }
+    if (!rule.kind && field === "userId") value = parseVisibleUserIdLabel(value)?.value ?? value;
+    return normalizeIdentityFieldValue(field, value);
+  }
+  function buildIdentityFieldSelector(node, document2, currentValue) {
+    const quote = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const stable = (value) => typeof value === "string" && !!value && value.length <= 100 && !/\d{5,}|@|token|password|secret|^:r[\w:]+:$/i.test(value) && (!currentValue || !value.toLowerCase().includes(currentValue.toLowerCase()));
+    const unique = (selector2) => {
+      try {
+        const nodes = document2.querySelectorAll(selector2);
+        return nodes.length === 1 && nodes[0] === node;
+      } catch {
+        return false;
+      }
+    };
+    for (const attribute of ["data-testid", "id", "name", "aria-label"]) {
+      const value = node.getAttribute?.(attribute);
+      if (!stable(value)) continue;
+      const selector2 = `${node.tagName.toLowerCase()}[${attribute}="${quote(value)}"]`;
+      if (unique(selector2)) return selector2;
+    }
+    const parts = [];
+    for (let current = node; current && parts.length < 12; current = current.parentElement) {
+      if (current === document2.body || current === document2.documentElement) {
+        parts.unshift(current.tagName.toLowerCase());
+        break;
+      }
+      const testId = current.getAttribute?.("data-testid");
+      const id = current.getAttribute?.("id");
+      if (current !== node && (stable(testId) || stable(id))) {
+        parts.unshift(stable(testId) ? `[data-testid="${quote(testId)}"]` : `[id="${quote(id)}"]`);
+        break;
+      }
+      const tag = current.tagName?.toLowerCase();
+      if (!tag) return void 0;
+      const siblings = [...current.parentElement?.children ?? [current]].filter(
+        (sibling) => sibling.tagName === current.tagName
+      );
+      const index = siblings.indexOf(current);
+      parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index + 1})` : tag);
+    }
+    const selector = parts.join(" > ");
+    return selector.length <= 500 && unique(selector) ? selector : void 0;
+  }
+  function describeIdentityField(node, field, document2, observedValue) {
+    if (!node || node === document2.body || node === document2.documentElement) return null;
+    let kind = /^(?:INPUT|TEXTAREA)$/.test(node.tagName ?? "") ? "value" : "text";
+    let raw = kind === "value" ? node.value : node.innerText ?? node.textContent;
+    if (typeof raw !== "string" || raw.length > 250) return null;
+    raw = raw.replace(/\s+/g, " ").trim();
+    const idLabel = field === "userId" ? parseVisibleUserIdLabel(raw) : null;
+    if (idLabel && observedValue && idLabel.value !== observedValue) return null;
+    let value = observedValue || normalizeIdentityFieldValue(field, idLabel?.value ?? raw);
+    if (!value) {
+      const labeled = raw.match(/^(.{1,50}?[:：#]\s*)([^\r\n]+)$/);
+      if (labeled) value = normalizeIdentityFieldValue(field, labeled[2]);
+    }
+    if (!value) return null;
+    const rule = { kind };
+    const attributes = field === "userId" ? ["data-user-id", "data-uid"] : field === "username" ? ["data-username", "data-user-name"] : field === "email" ? ["data-email"] : [];
+    for (const name of attributes)
+      if (normalizeIdentityFieldValue(field, node.getAttribute?.(name)) === value) {
+        rule.kind = "attribute";
+        rule.attribute = name;
+        raw = value;
+        break;
+      }
+    if (raw !== value && idLabel?.value === value && rule.kind === "text") {
+      rule.prefix = idLabel.prefix;
+      if (idLabel.stopAt) rule.stopAt = idLabel.stopAt;
+    } else if (raw !== value) {
+      const index = raw.indexOf(value);
+      if (index < 0 || raw.indexOf(value, index + value.length) >= 0) return null;
+      if (index) rule.prefix = raw.slice(0, index);
+      if (index + value.length < raw.length) rule.suffix = raw.slice(index + value.length);
+    }
+    if (!readIdentityFieldRules({ [field]: rule })) return null;
+    if (readIdentityField(node, field, rule) !== value) return null;
+    const selector = buildIdentityFieldSelector(node, document2, value);
+    return selector ? { value, selector, rule } : null;
+  }
+  function discoverIdentityEndpoints(entries, origin) {
+    const result = [];
+    for (const entry of entries ?? []) {
+      try {
+        const url = new URL(typeof entry === "string" ? entry : entry.name, origin);
+        if (url.origin !== origin || !/^https?:$/.test(url.protocol) || url.username || url.password || url.search || url.hash || /\/(?:\d+|[0-9a-f]{8}-[0-9a-f-]{20,})(?:\/|$)/i.test(url.pathname) || /(?:logout|signout|login|signin|register|check.?in|claim|delete|remove|token|keys?|invite|referral|list|search)/i.test(
+          url.pathname
+        ) || !/(?:^|\/)(?:me|self|whoami|who-am-i|current[-_]?user|current[-_]?account|userinfo|user[-_]?info|profile)(?:\/|$)|\/(?:user|account)\/(?:current|info)$/i.test(
+          url.pathname
+        ))
+          continue;
+        if (!result.includes(url.pathname)) result.push(url.pathname);
+        if (result.length >= 6) break;
+      } catch {
+      }
+    }
+    return result;
+  }
+  function identitySourceLabel(source) {
+    return source === "api" ? "站点接口" : source === "storage" ? "本地登录态" : source === "visible" ? "页面文本" : "未知来源";
+  }
+  function identitiesEqual(first, second) {
+    return typeof first === "string" && typeof second === "string" && !!first.trim() && first.trim().toLowerCase() === second.trim().toLowerCase();
+  }
+  function parseIdentityResponse(response, fieldPaths) {
+    const record = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+    const successful = (value) => {
+      if (value.success === false || value.ok === false || value.status === false) return false;
+      if (/^(?:error|failed|failure|unauthorized|forbidden)$/i.test(String(value.status ?? "")))
+        return false;
+      return value.code == null || /^(?:0|200|success|ok)$/i.test(String(value.code).trim());
+    };
+    const scalar = (value) => {
+      if (typeof value === "string" && value.trim()) return value.trim();
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    };
+    const identifier = (value) => {
+      if (typeof value === "number")
+        return Number.isSafeInteger(value) && value >= 0 ? String(value) : void 0;
+      if (typeof value === "string" && /^[\w.:-]{1,128}$/.test(value.trim())) return value.trim();
+    };
+    const containers = [
+      "user",
+      "current_user",
+      "currentUser",
+      "user_info",
+      "userInfo",
+      "profile",
+      "identity",
+      "account",
+      "current_account",
+      "currentAccount",
+      "me"
+    ];
+    const candidates = [];
+    const conflictingIds = /* @__PURE__ */ new Set();
+    const seen = /* @__PURE__ */ new Set();
+    function collect(value, depth = 0) {
+      if (!record(value) || depth > 4 || seen.has(value) || !successful(value)) return;
+      seen.add(value);
+      const envelopes = ["data", "result"].filter((key) => record(value[key]));
+      if (Object.prototype.hasOwnProperty.call(value, "data") || envelopes.length) {
+        for (const key of envelopes) collect(value[key], depth + 1);
+        for (const key of containers) if (record(value[key])) collect(value[key], depth + 1);
+        return;
+      }
+      const nested = containers.filter((key) => record(value[key]));
+      const ids2 = new Set(
+        [value.id, value.user_id, value.userId, value.uid, value.account_id, value.accountId].map(identifier).filter(Boolean)
+      );
+      if (ids2.size > 1) for (const id of ids2) conflictingIds.add(id);
+      const identity = {
+        userId: ids2.size === 1 ? [...ids2][0] : void 0,
+        username: scalar(value.username) ?? scalar(value.user_name) ?? scalar(value.login) ?? scalar(value.handle),
+        email: scalar(value.email),
+        displayName: scalar(value.display_name) ?? scalar(value.displayName) ?? scalar(value.nickname) ?? scalar(value.name)
+      };
+      if (identity.userId || identity.username || identity.email) {
+        if (!nested.length || identity.username || identity.email || identity.displayName)
+          candidates.push(identity);
+      }
+      for (const key of nested) collect(value[key], depth + 1);
+    }
+    collect(response);
+    if (record(response) && successful(response) && record(fieldPaths)) {
+      const mapped = {};
+      const mappedFields = /* @__PURE__ */ new Set();
+      for (const field of ["userId", "username", "email", "displayName"]) {
+        const path = fieldPaths[field];
+        if (typeof path !== "string" || !/^[\w-]+(?:\.[\w-]+)*$/.test(path)) continue;
+        mappedFields.add(field);
+        let value = response;
+        for (const key of path.split(".")) {
+          if (!record(value) || !successful(value) || !Object.hasOwn(value, key)) {
+            value = void 0;
+            break;
+          }
+          value = value[key];
+        }
+        mapped[field] = field === "userId" ? identifier(value) : scalar(value);
+      }
+      for (const identity of candidates) for (const field of mappedFields) delete identity[field];
+      if (mappedFields.has("userId")) conflictingIds.clear();
+      if (mapped.userId || mapped.username || mapped.email) candidates.push(mapped);
+    }
+    const ids = /* @__PURE__ */ new Set([
+      ...conflictingIds,
+      ...candidates.map((identity) => identity.userId).filter(Boolean)
+    ]);
+    if (ids.size > 1)
+      return { identityConflict: `身份接口同时返回不同用户 ID（${[...ids].join("、")}）` };
+    const result = {};
+    for (const field of ["userId", "username", "email", "displayName"]) {
+      const values = [...new Set(candidates.map((identity) => identity[field]).filter(Boolean))];
+      if (values.length === 1) result[field] = values[0];
+      else if (values.length > 1 && field !== "displayName")
+        return { identityConflict: `身份接口同时返回不同${field === "email" ? "邮箱" : "用户名"}` };
+    }
+    return Object.keys(result).length ? result : null;
+  }
+  function discoverIdentityResponse(response, configuredFields) {
+    const identity = parseIdentityResponse(response, configuredFields);
+    if (!identity || identity.identityConflict) return { identity, responseFields: void 0 };
+    const aliases = {
+      userId: ["id", "user_id", "userId", "uid", "account_id", "accountId"],
+      username: ["username", "user_name", "login", "handle"],
+      email: ["email"],
+      displayName: ["display_name", "displayName", "nickname", "name"]
+    };
+    const containers = [
+      "user",
+      "current_user",
+      "currentUser",
+      "user_info",
+      "userInfo",
+      "profile",
+      "identity",
+      "account",
+      "current_account",
+      "currentAccount",
+      "me"
+    ];
+    const paths = /* @__PURE__ */ new Map();
+    function visit(value, path = [], depth = 0) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || depth > 4) return;
+      const envelopes = ["data", "result"].filter(
+        (key) => value[key] && typeof value[key] === "object" && !Array.isArray(value[key])
+      );
+      if (!Object.hasOwn(value, "data") && !envelopes.length)
+        for (const [field, keys] of Object.entries(aliases)) {
+          if (!identity[field] || configuredFields?.[field]) continue;
+          for (const key of keys)
+            if (Object.hasOwn(value, key) && ["string", "number"].includes(typeof value[key]) && String(value[key]).trim() === identity[field]) {
+              const matches = paths.get(field) ?? [];
+              matches.push([...path, key].join("."));
+              paths.set(field, matches);
+            }
+        }
+      for (const key of [...envelopes, ...containers])
+        if (Object.hasOwn(value, key)) visit(value[key], [...path, key], depth + 1);
+    }
+    visit(response);
+    const responseFields = {};
+    for (const field of Object.keys(aliases)) {
+      if (!identity[field]) continue;
+      const configured = configuredFields?.[field];
+      if (typeof configured === "string" && /^[\w-]+(?:\.[\w-]+)*$/.test(configured))
+        responseFields[field] = configured;
+      else {
+        const candidates = paths.get(field);
+        if (candidates?.length === 1) responseFields[field] = candidates[0];
+      }
+    }
+    return {
+      identity,
+      responseFields: Object.keys(responseFields).length ? responseFields : void 0
+    };
+  }
+  function findIdentityMatch(identity, username, aliases = [], expectedIdentity) {
+    for (const field of ["username", "email"])
+      if (identitiesEqual(identity[field], expectedIdentity?.[field]))
+        return { value: identity[field], expected: expectedIdentity[field], source: "stored" };
+    if (expectedIdentity?.username || expectedIdentity?.email) return null;
+    for (const value of [identity.username, identity.email])
+      if (identitiesEqual(value, username)) return { value, expected: username, source: "primary" };
+    for (const alias of aliases) {
+      const field = typeof alias === "string" && alias.includes("@") ? "email" : "username";
+      if (identitiesEqual(identity[field], alias))
+        return { value: identity[field], expected: alias, source: "alias" };
+    }
+    return null;
+  }
+  function findIdentityOwner(identity, knownIdentities = []) {
+    return knownIdentities.find((known) => {
+      if (identity?.userId && known.userId) return String(identity.userId) === String(known.userId);
+      return ["username", "email"].some((field) => identitiesEqual(identity?.[field], known[field]));
+    });
+  }
+  function compareAccountIdentity(identity, username, expectedUserId, options = {}) {
+    if (identity?.identityConflict)
+      return { match: "unknown", detail: `身份证据冲突：${identity.identityConflict}` };
+    if (!identity)
+      return {
+        match: "unknown",
+        detail: expectedUserId ? `本账号已绑定用户 ID ${expectedUserId}，当前页面尚未返回用户 ID` : "读不到当前登录身份"
+      };
+    const origin = `读自${identitySourceLabel(identity.source)}`;
+    const owner = identity.userId ? options.knownUsers?.[identity.userId] : void 0;
+    if (owner)
+      return {
+        match: "mismatch",
+        detail: `当前登录的是用户 ID ${identity.userId}（本站账号 ${owner}，${origin}），本次要签到的是 ${expectedUserId ?? username}`
+      };
+    if (expectedUserId) {
+      if (!identity.userId)
+        return {
+          match: "unknown",
+          detail: `本账号已绑定用户 ID ${expectedUserId}，当前页面尚未返回用户 ID（${origin}）`
+        };
+      if (String(identity.userId) !== String(expectedUserId))
+        return {
+          match: "mismatch",
+          detail: `当前登录的是用户 ID ${identity.userId}（${origin}），本次要签到的是 ${expectedUserId}`
+        };
+      if (identity.source === "storage")
+        return { match: "unknown", detail: "本地保存的用户 ID 相同，但尚未确认当前登录会话" };
+      return {
+        match: "confirmed",
+        detail: `用户 ID ${identity.userId} 一致（${origin}，账号备注不参与身份核验）`
+      };
+    }
+    if (identity.source === "storage")
+      return { match: "unknown", detail: "本地登录态只是身份提示，不能证明当前登录账号" };
+    const nameOwner = findIdentityOwner(identity, options.knownIdentities);
+    if (nameOwner)
+      return {
+        match: "mismatch",
+        detail: `当前登录名已绑定给本站其他账号 ${nameOwner.label ?? nameOwner.username ?? nameOwner.email}`
+      };
+    const match = findIdentityMatch(
+      identity,
+      username,
+      options.expectedAliases,
+      options.expectedIdentity
+    );
+    if (match)
+      return {
+        match: "confirmed",
+        detail: match.source === "stored" ? `账号 ${username} 已保存的站点身份 ${match.expected} 与当前身份一致（${origin}）` : match.source === "alias" ? `账号 ${username} 保存的身份别名 ${match.expected} 与当前身份 ${match.value} 一致（${origin}）` : `账号 ${username} 的完整登录标识一致（${origin}）`
+      };
+    if ((options.expectedIdentity?.username || options.expectedIdentity?.email) && !["username", "email"].some((field) => options.expectedIdentity[field] && identity[field]))
+      return {
+        match: "unknown",
+        detail: `本站已绑定登录标识 ${options.expectedIdentity.username ?? options.expectedIdentity.email}，当前尚未返回可核对的字段（${origin}）`
+      };
+    const currentName = identity.username ?? identity.email;
+    return currentName ? {
+      match: "mismatch",
+      detail: `当前登录的是 ${currentName}（${origin}），本次要签到的是 ${options.expectedIdentity?.username ?? options.expectedIdentity?.email ?? username}`
+    } : { match: "unknown", detail: `站点未返回可比对的登录名（${origin}，昵称不作为唯一身份）` };
+  }
+  function identitySampleKey(identity) {
+    if (!identity || identity.identityConflict || identity.source === "storage") return null;
+    if (identity.userId) return JSON.stringify([identity.source, "id", String(identity.userId)]);
+    if (!identity.username && !identity.email) return null;
+    return JSON.stringify([
+      identity.source,
+      "name",
+      identity.username?.trim().toLowerCase(),
+      identity.email?.trim().toLowerCase()
+    ]);
+  }
+  function stableIdentitySamples(first, second) {
+    const key = identitySampleKey(first);
+    return !!key && key === identitySampleKey(second);
+  }
+  function resolveIdentityPage(site, document2, location2) {
+    const safeUrl = (path) => {
+      try {
+        const url = new URL(path, site.loginUrl);
+        if (url.origin !== new URL(site.loginUrl).origin || url.origin !== location2.origin || url.username || url.password || url.search || /(?:access_token|refresh_token|id_token|code|state|token|secret|password)=/i.test(url.hash))
+          return null;
+        return url.href;
+      } catch {
+        return null;
+      }
+    };
+    const configured = readIdentitySource(site)?.pagePath;
+    if (configured) return safeUrl(configured);
+    for (const link of document2?.querySelectorAll?.("a[href]") ?? []) {
+      if (!isIdentityElementVisible(link) || !link.closest?.('header, nav, aside, [role="banner"], [role="navigation"], .semi-navigation'))
+        continue;
+      const label = [
+        link.innerText,
+        link.getAttribute("aria-label"),
+        link.getAttribute("title")
+      ].join(" ");
+      if (!/个人(?:设置|资料|中心|信息)|我的(?:账户|账号)|\b(?:profile|personal|my account|account settings)\b/i.test(
+        label
+      ))
+        continue;
+      const url = safeUrl(link.getAttribute("href"));
+      if (url) return url;
+    }
+    return null;
+  }
+  var SiteIdentityResolver = class {
+    constructor({
+      getFamily = (site) => site.adapter?.family,
+      readStorage = () => void 0,
+      readPage = (site) => readVisibleAccountIdentity(
+        globalThis.document,
+        globalThis.location,
+        readIdentitySource(site)
+      ),
+      userIdHeaders = () => ({}),
+      bootstrapHeaders = async () => ({}),
+      readExternal = async () => null,
+      getOrigin = () => globalThis.location.origin,
+      getResources = () => globalThis.performance?.getEntriesByType?.("resource") ?? [],
+      fetch: request = (...args) => globalThis.fetch(...args),
+      transportHints = /* @__PURE__ */ new Map()
+    } = {}) {
+      Object.assign(this, {
+        getFamily,
+        readStorage,
+        readPage,
+        userIdHeaders,
+        bootstrapHeaders,
+        readExternal,
+        getOrigin,
+        getResources,
+        request,
+        transportHints
+      });
+    }
+    /** 每次都请求当前会话；只记住成功的接口位置，不缓存身份或凭据。 */
+    async read(site, explicitToken, options = {}) {
+      const family = this.getFamily(site);
+      const source = readIdentitySource(site);
+      const origin = this.getOrigin();
+      const sameOrigin = (endpoint) => {
+        try {
+          const url = new URL(endpoint, origin);
+          return url.origin === origin && url.origin === new URL(site.loginUrl).origin;
+        } catch {
+          return false;
+        }
+      };
+      const stored = (key2, type) => {
+        if (!key2) return null;
+        try {
+          return parseIdentityResponse(JSON.parse(this.readStorage(key2, type)));
+        } catch {
+          return null;
+        }
+      };
+      const hint = (source?.storageKey && stored(source.storageKey, source.storageType)?.userId) ?? stored("user")?.userId ?? (family === "sub2api" ? stored("auth_user")?.userId : void 0);
+      const defaults = family === "sub2api" ? ["/api/v1/auth/me", "/api/user/self", "/api/user/info"] : ["/api/user/self", "/api/user/info", "/api/v1/auth/me"];
+      const endpoints = [
+        ...new Set(
+          site.tokenConfig?.identityEndpoint ? [site.tokenConfig.identityEndpoint] : source?.endpoint && !sameOrigin(source.endpoint) ? [] : [
+            ...source?.endpoint && sameOrigin(source.endpoint) ? [source.endpoint] : [],
+            ...options.discover === true ? discoverIdentityEndpoints(this.getResources(), origin) : [],
+            ...defaults
+          ]
+        )
+      ];
+      const deadline = Date.now() + (options.timeoutMs ?? 4e3);
+      const key = JSON.stringify([
+        site.id,
+        origin,
+        explicitToken ? "explicit-token" : "browser-session",
+        endpoints.map((endpoint) => {
+          try {
+            const url = new URL(endpoint, origin);
+            return `${url.origin}${url.pathname}`;
+          } catch {
+            return null;
+          }
+        }),
+        site.tokenConfig?.headerName,
+        source?.responseFields,
+        !!source?.endpoint,
+        !!site.authBootstrap?.endpoint
+      ]);
+      const canRemember = endpoints.every((endpoint) => {
+        try {
+          const url = new URL(endpoint, origin);
+          return !url.search && !url.hash;
+        } catch {
+          return false;
+        }
+      });
+      const remembered = canRemember ? this.transportHints.get(key) : null;
+      const attempted = /* @__PURE__ */ new Set();
+      let partial = null;
+      const diagnostics = /* @__PURE__ */ new Set();
+      const trace = (endpoint, mode, detail) => {
+        if (!options.diagnostics?.push) return;
+        const message = `身份接口 ${endpoint}（${mode}）：${detail}`;
+        if (!diagnostics.has(message)) {
+          diagnostics.add(message);
+          options.diagnostics.push(message);
+        }
+      };
+      const modes = {
+        cookie: "当前会话",
+        hint: "当前页面用户提示头",
+        token: "本站 Token",
+        bootstrap: "会话令牌引导"
+      };
+      const read = async (headers, credentials, candidates = endpoints, mode = "cookie") => {
+        for (const endpoint of candidates) {
+          let url;
+          try {
+            url = new URL(endpoint, origin);
+          } catch {
+            continue;
+          }
+          const attempt = `${mode}|${url.href}`;
+          if (!sameOrigin(url.href) || Date.now() >= deadline || attempted.has(attempt)) continue;
+          attempted.add(attempt);
+          const controller = new AbortController();
+          const timer = setTimeout(
+            () => controller.abort(),
+            Math.min(1500, Math.max(1, deadline - Date.now()))
+          );
+          try {
+            const response = await this.request(url.href, {
+              method: "GET",
+              credentials,
+              headers: { Accept: "application/json", ...headers },
+              cache: "no-store",
+              redirect: "error",
+              signal: controller.signal
+            });
+            if (!response.ok) {
+              trace(url.pathname, modes[mode], `HTTP ${response.status}`);
+              continue;
+            }
+            if (response.redirected || response.url && new URL(response.url).href !== url.href) {
+              trace(url.pathname, modes[mode], "响应发生跳转，未采用身份");
+              continue;
+            }
+            const type = response.headers.get("content-type")?.toLowerCase() ?? "";
+            if (!type.includes("json")) {
+              trace(
+                url.pathname,
+                modes[mode],
+                type.includes("html") ? "返回 HTML 页面，可能是访问验证或登录页" : "响应不是 JSON 用户资料"
+              );
+              continue;
+            }
+            const body = await response.json().catch(() => null);
+            const discovered = options.discover === true ? discoverIdentityResponse(body, source?.responseFields) : null;
+            const identity = discovered?.identity ?? parseIdentityResponse(body, source?.responseFields);
+            if (!identity) {
+              trace(url.pathname, modes[mode], "未返回有效的当前用户字段");
+              continue;
+            }
+            const evidence = {
+              ...identity,
+              source: "api",
+              endpoint: url.pathname,
+              ...options.discover === true && !url.search && !url.hash && discovered?.responseFields ? {
+                identitySource: {
+                  endpoint: url.pathname,
+                  responseFields: discovered.responseFields
+                }
+              } : {}
+            };
+            if (identity.identityConflict) return evidence;
+            if (identity.userId || !partial && (identity.username || identity.email)) {
+              if (!url.search && !url.hash) this.transportHints.set(key, { endpoint, mode });
+              if (identity.userId) return evidence;
+            }
+            partial ??= evidence;
+          } catch (error) {
+            trace(
+              url.pathname,
+              modes[mode],
+              error?.name === "AbortError" ? "请求超时" : "请求失败或被站点访问校验拦截"
+            );
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        return null;
+      };
+      const readCookie = async (candidates = endpoints) => {
+        for (const endpoint of candidates) {
+          let identity = await read({}, "include", [endpoint], "cookie");
+          if (identity) return identity;
+          if (hint) {
+            identity = await read(this.userIdHeaders(hint), "include", [endpoint], "hint");
+            if (identity) return identity;
+          }
+        }
+        return null;
+      };
+      let token = explicitToken ?? (site.tokenConfig ? this.readStorage(site.tokenConfig.storageKey, site.tokenConfig.storageType) : source?.tokenKey ? this.readStorage(source.tokenKey, source.tokenStorageType) : void 0);
+      if (!token && family === "sub2api")
+        for (const storageKey of ["auth_token", "access_token", "token"]) {
+          const value = this.readStorage(storageKey);
+          if (value && value.length > 20 && !value.startsWith("{")) {
+            token = value;
+            break;
+          }
+        }
+      const authorization = token ? {
+        [site.tokenConfig?.headerName || source?.tokenHeader || "Authorization"]: `${site.tokenConfig?.headerPrefix ?? source?.tokenPrefix ?? "Bearer "}${token}`
+      } : null;
+      if (remembered) {
+        let identity = null;
+        if (explicitToken && remembered.mode === "token" && authorization)
+          identity = await read(
+            { ...authorization, ...this.userIdHeaders(hint) },
+            "omit",
+            [remembered.endpoint],
+            "token"
+          );
+        else if (!explicitToken) {
+          identity = remembered.mode === "hint" && hint ? await read(this.userIdHeaders(hint), "include", [remembered.endpoint], "hint") : await readCookie([remembered.endpoint]);
+          if (!identity && remembered.mode === "token" && authorization)
+            identity = await read(
+              { ...authorization, ...this.userIdHeaders(hint) },
+              "omit",
+              [remembered.endpoint],
+              "token"
+            );
+          if (!identity && remembered.mode === "bootstrap" && site.authBootstrap) {
+            const headers = await this.bootstrapHeaders(site);
+            if (Object.keys(headers).length)
+              identity = await read(
+                { ...headers, ...this.userIdHeaders(hint) },
+                "omit",
+                [remembered.endpoint],
+                "bootstrap"
+              );
+          }
+        }
+        if (identity) return identity;
+        this.transportHints.delete(key);
+      }
+      if (!explicitToken) {
+        const identity = await readCookie();
+        if (identity) return identity;
+      }
+      if (authorization) {
+        const identity = await read(
+          { ...authorization, ...this.userIdHeaders(hint) },
+          "omit",
+          endpoints,
+          "token"
+        );
+        if (identity) return identity;
+      }
+      if (source?.endpoint && !sameOrigin(source.endpoint) && Date.now() < deadline) {
+        const identity = await this.readExternal(site, source, explicitToken);
+        if (identity?.userId || identity?.identityConflict) return identity;
+        partial ??= identity;
+      }
+      if (!explicitToken && site.authBootstrap && Date.now() < deadline) {
+        const headers = await this.bootstrapHeaders(site);
+        if (Object.keys(headers).length) {
+          const identity = await read(
+            { ...headers, ...this.userIdHeaders(hint) },
+            "omit",
+            endpoints,
+            "bootstrap"
+          );
+          if (identity) return identity;
+        }
+      }
+      if (options.serverOnly === true || explicitToken) return partial;
+      const visible = this.readPage(site);
+      if (!partial) return visible;
+      if (visible?.identityConflict) return visible;
+      if (visible?.userId) {
+        if (partial.username && visible.username && !identitiesEqual(partial.username, visible.username) || partial.email && visible.email && !identitiesEqual(partial.email, visible.email))
+          return {
+            source: "visible",
+            identityConflict: `身份接口的登录名与页面用户 ID ${visible.userId} 所属账号不一致`
+          };
+        return { ...partial, ...visible };
+      }
+      return partial;
+    }
+  };
+  var identityPatterns = {
+    excludedText: /(邀请|受邀|推荐|推广|上级|下级|下线|团队|排行|榜|赞助|作者|客服|管理员|中奖|获奖|公告|invit|referr|sponsor|winner|leaderboard|announcement)/i,
+    excludedSection: /中奖(?:名单|记录|用户)|获奖(?:名单|记录)|排行榜|排名榜|用户列表|成员列表|历史记录|公告|\b(?:winners?|leaderboard|rankings?|draw history|announcements?)\b/i,
+    profileTitle: /^(?:个人资料|个人信息|账户信息|账号信息|我的账户|我的账号|我的资料|profile|my account|account (?:info(?:rmation)?|details))\s*[:：]?$/i,
+    personalLabel: /^(?:当前(?:登录)?(?:账号|账户|用户)|我的(?:账号|账户|邮箱))\s*[:：]?/,
+    identityLabel: /(?<![A-Za-z])(?:用户\s*ID|User\s*ID|UID)\s*[:：#]?\s*\d|当前(?:登录)?(?:账号|账户|用户)|用户名|登录名|账[号户]|邮箱|电子邮件|\b(?:e-?mail|username|account)\b|欢迎回来|welcome back/i,
+    accountMenu: /退出登录|退出账号|注销登录|个人资料|账户设置|账号设置|\b(?:log\s*out|sign\s*out|my account|account settings|profile)\b/i
+  };
+  function filterIdentityText(e, t = false) {
+    if (!e) return ``;
+    let n = [], r = false, i = false;
+    for (let a of e.split(/[\r\n]+/).map((e2) => e2.trim()).filter(Boolean)) {
+      if (identityPatterns.excludedSection.test(a)) {
+        r = true, i = false;
+        continue;
+      }
+      let e2 = identityPatterns.profileTitle.test(a);
+      if ((e2 || identityPatterns.personalLabel.test(a)) && (r = false), r || identityPatterns.excludedText.test(a)) {
+        i = false;
+        continue;
+      }
+      let o = e2 || identityPatterns.identityLabel.test(a), s = i && /^[^\s<>]{2,80}(?:\s*[·|]\s*[^\r\n]{1,40})?$/.test(a);
+      (t || o || s) && n.push(a), i = o;
+    }
+    return n.join(`
+`);
+  }
+  function isIdentityElementVisible(e) {
+    for (let t = e; t; t = t.parentElement) {
+      if (t.hidden || t.getAttribute(`aria-hidden`) === `true` || t.hasAttribute(`inert`)) return false;
+      let e2 = getComputedStyle(t);
+      if (e2.display === `none` || e2.visibility === `hidden` || e2.visibility === `collapse` || Number.parseFloat(e2.opacity || `1`) <= 0.02)
+        return false;
+    }
+    return true;
+  }
+  function collectIdentityText(document2 = globalThis.document) {
+    let bodyText = document2.body?.innerText;
+    if (document2.body && typeof document2.createTreeWalker === "function") {
+      const text = [];
+      const walker = document2.createTreeWalker(document2.body, 4);
+      let node;
+      let count = 0;
+      while ((node = walker.nextNode()) && count++ < 6e3) {
+        const parent = node.parentElement;
+        if (!parent || parent.closest?.(
+          'script, style, table, [role="table"], [role="grid"], [role="list"], [role="listitem"], .lottery-sidebar, [data-checkin-learning-guide]'
+        ) || parent.closest?.("form")?.querySelector?.('input[type="password"]') || !isIdentityElementVisible(parent))
+          continue;
+        if (node.textContent?.trim()) text.push(node.textContent.trim());
+      }
+      bodyText = text.join("\n");
+    }
+    let e = [(0, filterIdentityText)(bodyText)];
+    if (typeof document2.querySelectorAll != `function`) return e[0];
+    for (let t of document2.querySelectorAll(
+      `[role="menu"], [aria-haspopup="menu"], [aria-haspopup="true"]`
+    )) {
+      if (!(0, isIdentityElementVisible)(t) || t.closest(`table, [role="table"], [role="grid"], .lottery-sidebar`))
+        continue;
+      let n = t.innerText ?? t.textContent ?? ``;
+      if (!n.trim() || n.length > 2e3) continue;
+      let r = t.getAttribute(`role`) === `menu` && identityPatterns.accountMenu.test(n), i = t.hasAttribute(`aria-haspopup`) && (!!t.closest(`header, nav, [role="banner"]`) || /user|account|profile|avatar|用户|账号|账户|个人|头像/i.test(
+        `${t.getAttribute(`aria-label`) ?? ``} ${t.getAttribute(`title`) ?? ``}`
+      ));
+      (r || i) && e.push((0, filterIdentityText)(n, true));
+    }
+    return e.filter(Boolean).join(`
+`);
+  }
+  function uniqueIdentityValue(e) {
+    let t = new Map(e.map((e2) => [e2.toLowerCase(), e2]));
+    return t.size === 1 ? t.values().next().value : void 0;
+  }
+  function parseVisibleIdentity(e) {
+    if (!e) return null;
+    let t = { source: `visible` }, ids = (0, findVisibleUserIds)(e, true);
+    if (ids.length > 1)
+      return {
+        source: `visible`,
+        identityConflict: `页面同时显示多个当前用户 ID（${ids.join(`、`)}）`
+      };
+    ids[0] && (t.userId = ids[0]);
+    let r = [...e.matchAll(/(?<![\w.+@*-])@([A-Za-z0-9][A-Za-z0-9._-]{1,38})\b/g)].map((e2) => e2[1]).filter((e2) => !e2.includes(`.`)), i = [
+      ...e.matchAll(
+        /(?:^|\s)(?:用户名|登录名|当前(?:登录)?(?:账号|账户)|username|login name)(?:\s*[:：]\s*|\s+)([\p{L}\p{N}][\p{L}\p{N}._+@-]{1,79})/giu
+      )
+    ].map((e2) => e2[1]).filter((e2) => !e2.includes(`@`)), a = (0, uniqueIdentityValue)(i.length ? i : r);
+    a && (t.username = a);
+    let o = (0, uniqueIdentityValue)(
+      [...e.matchAll(/(?<![\w.+*-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g)].map((e2) => e2[0])
+    );
+    return o && (t.email = o), t.userId || t.username || t.email ? t : null;
+  }
+  function readVisibleAccountIdentity(document2 = globalThis.document, location2 = globalThis.location, source = {}, options = {}) {
+    if (!document2) return null;
+    const textIdentity = (0, parseVisibleIdentity)((0, collectIdentityText)(document2));
+    if (typeof document2.querySelectorAll !== `function`) return textIdentity;
+    const values = /* @__PURE__ */ new Map();
+    const locations = /* @__PURE__ */ new Map();
+    const profileWords = /个人资料|个人信息|我的(?:账户|账号|资料)|(?:^|[\s_-])(?:profile|personal|my[-_ ]account|account[-_ ](?:info|details)|user[-_ ]info)(?:$|[\s_-])/i;
+    const excludedWords = /中奖|获奖|邀请|推荐|排行榜|用户列表|成员列表|公告|(?:^|[\s_-])(?:winners?|leaderboard|rankings?|user[-_ ]list|member[-_ ]list|invitation|referral|announcement)(?:$|[\s_-])/i;
+    const profilePath = /\/(?:profile|personal|account|account-settings|my-account)(?:\/|$)/i.test(
+      `${typeof location2 === `undefined` ? `` : location2.pathname}${typeof location2 === `undefined` ? `` : location2.hash}`
+    );
+    function fieldName(label) {
+      const name = String(label ?? ``).replace(/[:：#*＊]/g, ``).replace(/[\s_-]+/g, ``).toLowerCase();
+      if (/^(?:用户id|用户编号|账号id|账户id|userid|uid|accountid|id)$/.test(name)) return `userId`;
+      if (/^(?:用户名|登录名|账号名|账户名|账号|账户|当前(?:登录)?(?:账号|账户|用户)|我的(?:账号|账户)|username|loginname|account|currentuser|currentaccount|myaccount)$/.test(
+        name
+      ))
+        return `username`;
+      if (/^(?:邮箱|电子邮箱|电子邮件|我的邮箱|email|emailaddress)$/.test(name)) return `email`;
+      if (/^(?:昵称|显示名称|displayname|nickname)$/.test(name)) return `displayName`;
+      return null;
+    }
+    function metadata(node) {
+      return [
+        node.getAttribute?.(`aria-label`),
+        node.getAttribute?.(`title`),
+        node.getAttribute?.(`data-testid`),
+        node.id,
+        typeof node.className === `string` ? node.className : ``
+      ].filter(Boolean).join(` `);
+    }
+    function excluded(node) {
+      if (!(0, isIdentityElementVisible)(node)) return true;
+      if (node.closest?.(
+        `table, [role="table"], [role="grid"], [role="list"], [role="listitem"], .lottery-sidebar`
+      ))
+        return true;
+      for (let current = node; current && !/^(?:BODY|HTML)$/.test(current.tagName); current = current.parentElement) {
+        if (excludedWords.test(metadata(current))) return true;
+        const heading = current.querySelector?.(
+          `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`
+        );
+        if (heading && excludedWords.test(heading.innerText ?? heading.textContent ?? ``)) return true;
+      }
+      const form = node.closest?.(`form`);
+      return !!form?.querySelector?.(`input[type="password"]`);
+    }
+    function profileArea(node, label) {
+      if (/^(?:当前|我的|current\s|my\s)/i.test(String(label ?? ``).trim())) return true;
+      if (profilePath) return true;
+      if (source?.pagePath) {
+        try {
+          const url = new URL(source.pagePath, location2.href);
+          if (url.origin === location2.origin && `${url.pathname}${url.hash}` === `${location2.pathname}${location2.hash}`)
+            return true;
+        } catch {
+        }
+      }
+      for (let current = node; current && !/^(?:BODY|HTML)$/.test(current.tagName); current = current.parentElement) {
+        if (profileWords.test(metadata(current))) return true;
+        const heading = current.querySelector?.(
+          `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`
+        );
+        if (heading && profileWords.test(heading.innerText ?? heading.textContent ?? ``)) return true;
+      }
+      return false;
+    }
+    function add(label, node, value, explicit = false) {
+      const field = fieldName(label);
+      if (!field || !node || excluded(node) || !explicit && !profileArea(node, label)) return;
+      const normalized = String(value ?? ``).trim();
+      if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return;
+      if (field === `userId` && !/^[\w.:-]{1,128}$/.test(normalized)) return;
+      if (field === `username` && !/^[\p{L}\p{N}@][\p{L}\p{N}._+@'-]{1,79}$/u.test(normalized))
+        return;
+      if (field === `email` && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return;
+      const candidates = values.get(field) ?? /* @__PURE__ */ new Set();
+      candidates.add(normalized);
+      values.set(field, candidates);
+      if (options.collectSource === true) {
+        const descriptor = describeIdentityField(node, field, document2, normalized);
+        if (descriptor) {
+          const fields = locations.get(field) ?? [];
+          fields.push(descriptor);
+          locations.set(field, fields);
+        }
+      }
+    }
+    function controlValue(control) {
+      const tag = control?.tagName?.toUpperCase();
+      if (tag === `OUTPUT`) return control.innerText ?? control.textContent;
+      if ((tag === `INPUT` || tag === `TEXTAREA`) && (control.readOnly || control.disabled || control.hasAttribute?.(`readonly`) || control.hasAttribute?.(`disabled`)) && !/^(?:password|hidden)$/i.test(control.type ?? ``))
+        return control.value;
+      return null;
+    }
+    for (const term of document2.querySelectorAll(`dt`)) {
+      const description = term.nextElementSibling;
+      if (description?.tagName?.toUpperCase() !== `DD` || excluded(term)) continue;
+      add(
+        term.innerText ?? term.textContent,
+        description,
+        description.innerText ?? description.textContent
+      );
+    }
+    for (const label of document2.querySelectorAll(`label`)) {
+      if (excluded(label)) continue;
+      const id = label.htmlFor || label.getAttribute?.(`for`);
+      const control = id ? document2.getElementById?.(id) : label.querySelector?.(`input, textarea, output`);
+      add(label.innerText ?? label.textContent, control, controlValue(control));
+    }
+    for (const control of document2.querySelectorAll(
+      `input[readonly], input[disabled], textarea[readonly], textarea[disabled], output`
+    )) {
+      const label = control.getAttribute?.(`aria-label`) || control.getAttribute?.(`name`) || control.id;
+      add(label, control, controlValue(control));
+    }
+    let profileCardFound = false;
+    for (const tag of document2.querySelectorAll(`.semi-tag`)) {
+      const match = (tag.innerText ?? tag.textContent ?? ``).trim().match(/^(?:用户\s*ID|User\s*ID|UID|ID)\s*[:：#]\s*([\w.:-]{1,128})$/i);
+      if (!match || excluded(tag) || !profileArea(tag, `ID`)) continue;
+      const nameNode = tag.parentElement?.previousElementSibling;
+      const name = (nameNode?.innerText ?? nameNode?.textContent ?? ``).trim();
+      if (!nameNode || !/^[\p{L}\p{N}@][\p{L}\p{N}._+@'-]{1,79}$/u.test(name)) continue;
+      let card = tag.parentElement;
+      for (let depth = 0; card && depth < 4; depth++, card = card.parentElement) {
+        if (excluded(card)) break;
+        if (card.querySelector?.(`.semi-avatar, [data-testid="user-avatar"], [aria-label="用户头像"]`)) {
+          add(`用户 ID`, tag, match[1]);
+          add(`用户名`, nameNode, name);
+          profileCardFound = true;
+          break;
+        }
+      }
+    }
+    for (const node of [...document2.querySelectorAll(`div, span, p`)].slice(0, 1500)) {
+      if (node.children?.length || excluded(node) || !profileArea(node, `ID`)) continue;
+      const label = parseVisibleUserIdLabel(node.innerText ?? node.textContent);
+      if (!label) continue;
+      let currentCard = false;
+      for (let card = node.parentElement, depth = 0; card && depth < 3; depth++, card = card.parentElement) {
+        if (excluded(card) || /^(?:BODY|HTML)$/.test(card.tagName)) break;
+        const context = (card.innerText ?? card.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (context.length <= 350 && /(?:^|\s)(?:current\s+(?:user|account)|当前(?:用户|账号|账户))(?:\s|[:：]|$)/i.test(context)) {
+          currentCard = true;
+          break;
+        }
+      }
+      if (currentCard) {
+        add(`用户 ID`, node, label.value);
+        profileCardFound = true;
+      }
+    }
+    const fieldLabels2 = {
+      userId: `用户 ID`,
+      username: `用户名`,
+      email: `邮箱`,
+      displayName: `昵称`
+    };
+    const mappedFields = new Set(
+      Object.keys(source?.pageFields ?? {}).filter((field) => fieldLabels2[field])
+    );
+    for (const field of mappedFields) {
+      values.delete(field);
+      locations.delete(field);
+    }
+    let onIdentityPage = true;
+    if (source?.pagePath) {
+      try {
+        const page = new URL(source.pagePath, location2.href);
+        onIdentityPage = page.origin === location2.origin && page.pathname + page.hash === location2.pathname + location2.hash;
+      } catch {
+        onIdentityPage = false;
+      }
+    }
+    let mappedConflict;
+    for (const [field, selector] of Object.entries(source?.pageFields ?? {})) {
+      if (!fieldLabels2[field]) continue;
+      let nodes;
+      try {
+        nodes = onIdentityPage ? [...document2.querySelectorAll(selector)].filter(isIdentityElementVisible) : [];
+      } catch {
+        continue;
+      }
+      if (nodes.length > 1) {
+        mappedConflict = `本站保存的${fieldLabels2[field]}读取位置命中了多个可见元素`;
+        continue;
+      }
+      const node = nodes[0];
+      const rule = source.pageFieldRules?.[field];
+      const value = readIdentityField(node, field, rule);
+      if (!value) continue;
+      values.set(field, /* @__PURE__ */ new Set([value]));
+      if (options.collectSource === true) {
+        const descriptor = describeIdentityField(node, field, document2, value);
+        if (descriptor)
+          locations.set(field, [{ ...descriptor, selector, ...rule ? { rule } : {} }]);
+      }
+    }
+    if (mappedConflict) return { source: "visible", identityConflict: mappedConflict };
+    const ids = new Set(values.get(`userId`) ?? []);
+    if (textIdentity?.userId && !mappedFields.has("userId")) ids.add(textIdentity.userId);
+    if (textIdentity?.identityConflict && !mappedFields.has("userId")) return textIdentity;
+    if (ids.size > 1)
+      return {
+        source: `visible`,
+        identityConflict: `页面同时显示多个当前用户 ID（${[...ids].join(`、`)}）`
+      };
+    const identity = { ...textIdentity, source: `visible` };
+    for (const field of mappedFields) delete identity[field];
+    if (mappedFields.has("userId")) delete identity.identityConflict;
+    for (const [field, candidates] of values)
+      if (candidates.size === 1) identity[field] = [...candidates][0];
+    if (values.size) identity.evidence = profileCardFound ? `profile-card` : `structured-fields`;
+    if (options.collectSource === true && location2?.origin) {
+      const pageFields = {};
+      const pageFieldRules = {};
+      for (const [field, descriptors] of locations) {
+        const descriptor = descriptors.find((item) => item.value === identity[field]);
+        if (!descriptor || new Set(descriptors.map((item) => item.selector)).size !== 1) continue;
+        pageFields[field] = descriptor.selector;
+        pageFieldRules[field] = descriptor.rule;
+      }
+      if (Object.keys(pageFields).length)
+        identity.identitySource = {
+          pagePath: location2.pathname + location2.hash,
+          pageFields,
+          pageFieldRules
+        };
+    }
+    return identity.userId || identity.username || identity.email ? identity : null;
+  }
+  function findVisibleUserIds(e, all = false) {
+    let t = /(?<![A-Za-z])(?:用户\s*ID|User\s*ID|UID)\s*[:：#]?\s*(\d{1,12})\b/gi, n = /* @__PURE__ */ new Set();
+    for (let r of e.matchAll(t)) {
+      let t2 = r[1];
+      if (!t2) continue;
+      let i = e.slice(Math.max(0, (r.index ?? 0) - 14), r.index ?? 0);
+      identityPatterns.excludedText.test(i) || n.add(t2);
+    }
+    return all ? [...n] : n.size === 1 ? [...n][0] : void 0;
+  }
+
+  // src/modules/learning/identity-learning.js
+  var fieldLabels = { userId: "用户 ID", username: "登录名", email: "邮箱" };
+  var guideSelector = "[data-checkin-learning-guide], [data-checkin-identity-picker]";
+  function identitySourceSummary(identity, source = identity?.identitySource) {
+    const field = identity?.userId ? "userId" : identity?.username ? "username" : "email";
+    const value = identity?.[field];
+    if (!value) return "尚未读到当前登录身份，可以点选自己的用户 ID 或唯一登录名";
+    const position = identity.source === "api" ? `${source?.endpoint ?? identity.endpoint ?? ""} → ${source?.responseFields?.[field] ?? field}` : source?.pageFields?.[field] ? `${source.pagePath ?? ""} → ${fieldLabels[field]}字段` : "当前页面";
+    return `已识别${fieldLabels[field]} ${value} · ${position}`;
+  }
+  var IdentitySourceLearner = class {
+    constructor({
+      site,
+      send,
+      requestIdentity,
+      getProgress = () => ({}),
+      onStatus = () => {
+      },
+      document: document2 = globalThis.document,
+      location: location2 = globalThis.location,
+      window: window2 = globalThis.window,
+      wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    }) {
+      Object.assign(this, {
+        site,
+        send,
+        requestIdentity,
+        getProgress,
+        onStatus,
+        document: document2,
+        location: location2,
+        window: window2,
+        wait
+      });
+      this.source = readIdentitySource(site) ?? {};
+      this.selectedFields = /* @__PURE__ */ new Set();
+      this.active = false;
+      this.picking = null;
+      this.status = "自动查找身份接口和资料字段；也可点选自己的用户 ID 或唯一登录名";
+      this.pendingApi = null;
+      this.sentApi = null;
+      this.lastProbeAt = 0;
+      this.probeAttempts = /* @__PURE__ */ new Map();
+      this.learnedPhase = null;
+      this.onClick = this.onClick.bind(this);
+      this.onMove = this.onMove.bind(this);
+      this.onKey = this.onKey.bind(this);
+      this.onPointer = this.onPointer.bind(this);
+    }
+    path() {
+      return this.location.pathname + this.location.hash;
+    }
+    setStatus(text) {
+      this.status = text;
+      this.onStatus(text, this.picking);
+    }
+    readVisible() {
+      const identity = readVisibleAccountIdentity(this.document, this.location, this.source, {
+        collectSource: true
+      });
+      if (identity?.identitySource && this.selectedFields.size && this.source.pagePath === this.path())
+        identity.selectedFields = [...this.selectedFields];
+      return identity;
+    }
+    async reportVisible(observation) {
+      return this.report(observation);
+    }
+    async report(observation) {
+      const result = await this.send({
+        ...observation,
+        stable: true,
+        ...observation.identity.identitySource ? { identitySource: observation.identity.identitySource } : {},
+        ...observation.identity.selectedFields ? { selectedFields: observation.identity.selectedFields } : {}
+      });
+      if (result?.ok && !result.ignored) {
+        if (!this.picking) this.setStatus(identitySourceSummary(observation.identity));
+      } else if (result?.ignored) {
+        if (!this.picking)
+          this.setStatus(result.reason || "已读到页面身份；请先演示本账号的登录，再建立绑定");
+      } else {
+        this.setStatus(result?.error || "身份读取位置保存失败");
+      }
+      return result;
+    }
+    canReadApi() {
+      const progress = this.getProgress();
+      return !!(progress.signedIn || progress.login) && !/(?:^|\/)(?:login|signin|oauth|authorize|logout)(?:\/|$)/i.test(this.path()) && !this.document.querySelector?.('form input[type="password"]');
+    }
+    probe(force = false) {
+      if (this.pendingApi) return this.pendingApi;
+      if (!this.requestIdentity || !this.canReadApi() || !force && !this.active)
+        return Promise.resolve();
+      const path = this.path();
+      const phase = JSON.stringify([path, this.getProgress().loginAt]);
+      if (!force && (this.learnedPhase === phase || (this.probeAttempts.get(phase) ?? 0) >= 3))
+        return Promise.resolve();
+      this.probeAttempts.set(phase, (this.probeAttempts.get(phase) ?? 0) + 1);
+      this.lastProbeAt = Date.now();
+      this.pendingApi = (async () => {
+        const read = () => this.requestIdentity({ ...this.site, identitySource: this.source }, void 0, {
+          discover: true,
+          serverOnly: true,
+          timeoutMs: 3e3
+        });
+        const first = await read();
+        if (!first?.identitySource || first.source !== "api") {
+          if (!this.picking && !this.selectedFields.size && this.active)
+            this.setStatus("身份接口未返回可核对字段；请点选个人资料页中自己的用户 ID 或唯一登录名");
+          return;
+        }
+        await this.wait(350);
+        const second = await read();
+        if (!this.active && !force || this.path() !== path || !stableIdentitySamples(first, second) || JSON.stringify(first.identitySource) !== JSON.stringify(second?.identitySource))
+          return;
+        const key = JSON.stringify([
+          phase,
+          second.userId,
+          second.username,
+          second.email,
+          second.identitySource
+        ]);
+        if (this.sentApi === key) return;
+        const result = await this.report({ identity: second, path });
+        if (result?.ok && !result.ignored) {
+          this.sentApi = key;
+          this.learnedPhase = phase;
+        }
+      })().finally(() => {
+        this.pendingApi = null;
+      });
+      return this.pendingApi;
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.document.addEventListener("click", this.onClick, true);
+      this.document.addEventListener("pointermove", this.onMove, true);
+      this.document.addEventListener("keydown", this.onKey, true);
+      for (const name of ["pointerdown", "pointerup", "mousedown", "mouseup"])
+        this.document.addEventListener(name, this.onPointer, true);
+      this.timer = setInterval(() => {
+        if (Date.now() - this.lastProbeAt >= 5e3) this.probe().catch(() => {
+        });
+      }, 650);
+      this.setStatus(this.status);
+      this.probe().catch(() => {
+      });
+    }
+    stop() {
+      this.active = false;
+      clearInterval(this.timer);
+      this.timer = void 0;
+      this.document.removeEventListener("click", this.onClick, true);
+      this.document.removeEventListener("pointermove", this.onMove, true);
+      this.document.removeEventListener("keydown", this.onKey, true);
+      for (const name of ["pointerdown", "pointerup", "mousedown", "mouseup"])
+        this.document.removeEventListener(name, this.onPointer, true);
+      this.cancelPick(false);
+    }
+    async flush() {
+      await this.pendingApi;
+      await this.probe(true);
+    }
+    pick(field) {
+      if (!fieldLabels[field] || !this.active) return;
+      if (this.document.querySelector?.('form input[type="password"]')) {
+        this.setStatus("请先登录并打开自己的个人资料页，再选择身份字段");
+        return;
+      }
+      if (this.picking === field) {
+        this.cancelPick();
+        return;
+      }
+      this.picking = field;
+      this.setStatus(`点击页面中自己的${fieldLabels[field]}；不要选择昵称或其他用户。按 Esc 取消`);
+    }
+    cancelPick(update = true) {
+      this.picking = null;
+      this.overlay?.remove();
+      this.overlay = null;
+      if (update) this.setStatus("已退出字段点选，可继续演示登录和签到");
+    }
+    target(event) {
+      return event.composedPath().find((node) => node?.nodeType === 1 && node.tagName);
+    }
+    inGuide(event) {
+      return event.composedPath().some((node) => node?.matches?.(guideSelector));
+    }
+    onPointer(event) {
+      if (!this.picking || this.inGuide(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    onKey(event) {
+      if (!this.picking || event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.cancelPick();
+    }
+    onMove(event) {
+      if (!this.picking || this.inGuide(event)) return;
+      const node = this.target(event);
+      if (!node || node === this.document.body || node === this.document.documentElement) return;
+      const rect = node.getBoundingClientRect();
+      if (!this.overlay) {
+        this.overlay = this.document.createElement("div");
+        this.overlay.setAttribute("data-checkin-identity-picker", "");
+        this.overlay.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #fbbf24;background:rgba(251,191,36,.12);box-sizing:border-box;border-radius:3px";
+        this.document.body.append(this.overlay);
+      }
+      Object.assign(this.overlay.style, {
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`
+      });
+    }
+    onClick(event) {
+      if (!this.picking || this.inGuide(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const field = this.picking;
+      const node = this.target(event);
+      const labels = [
+        node?.getAttribute?.("aria-label"),
+        node?.getAttribute?.("name"),
+        node?.id,
+        node?.previousElementSibling?.textContent
+      ].join(" ");
+      if (field === "username" && /昵称|显示名|nickname|display[-_ ]?name/i.test(labels)) {
+        this.setStatus("这是显示昵称，请选择本站的唯一登录名，或改选用户 ID");
+        return;
+      }
+      const descriptor = describeIdentityField(node, field, this.document);
+      if (!descriptor) {
+        this.setStatus(
+          `这个元素不能稳定读取${fieldLabels[field]}，请点中身份值本身；不要选登录输入框`
+        );
+        return;
+      }
+      if (this.source.pagePath !== this.path()) {
+        this.source = { ...this.source, pageFields: {}, pageFieldRules: {} };
+        this.selectedFields.clear();
+      }
+      this.source = {
+        ...this.source,
+        pagePath: this.path(),
+        pageFields: { ...this.source.pageFields, [field]: descriptor.selector },
+        pageFieldRules: { ...this.source.pageFieldRules, [field]: descriptor.rule }
+      };
+      this.selectedFields.add(field);
+      this.cancelPick(false);
+      this.setStatus(`已选中${fieldLabels[field]} ${descriptor.value}，正在连续读取并核验`);
+    }
+  };
+
+  // src/modules/learning/lottery-learning.js
+  var auxiliaryLotteryText = /记录|紀錄|历史|歷史|规则|規則|概率|奖池|獎池|结果|結果|说明|說明|知道了|关闭|關閉|取消|返回|复制|複製|\b(?:history|records?|rules?|odds|results?|summary|close|cancel|back|copy)\b/i;
+  var lotteryActionText = /抽[奖獎签籤]|翻牌|(?:连|連)抽|[单單]抽|抽\s*(?:[1-9]\d*|[一二三四五六七八九十百]+)\s*次|(?:立即|开始|開始|免费|免費|再|点击|點擊)抽|\b(?:draw|spin|scratch)\b/i;
+  var lotteryRoute = /(?:^|\/)(?:lottery|lotteries|lucky[-_]?draw|draw|prize|spin)(?:\/|$)/i;
+  var graphicLotteryControl = /(?:^|[\s_-])(?:gift|spin|wheel|scratch|draw(?:[\s_-](?:btn|button|control))?|lottery[\s_-](?:btn|button|control))(?:$|[\s_-])/i;
+  var lotteryCompletedWords = Object.freeze([
+    "抽奖成功",
+    "抽奖完成",
+    "开奖成功",
+    "恭喜中奖",
+    "恭喜中獎",
+    "谢谢参与",
+    "謝謝參與",
+    "未中奖",
+    "未中獎",
+    "未中",
+    "You won",
+    "Thanks for playing",
+    "Better luck next time",
+    "Draw successful",
+    "Draw complete",
+    "Draw completed"
+  ]);
+  var lotteryAlreadyWords = Object.freeze([
+    "今日梦火抽签次数已耗尽",
+    "今日抽奖次数已耗尽",
+    "今日抽奖次数已用完",
+    "今日抽奖次数已达上限",
+    "已达到今日抽奖上限",
+    "This draw is complete",
+    "You have already drawn today",
+    "Daily draw limit reached"
+  ]);
+  var lotteryResultPanels = [
+    "[data-lottery-result]",
+    "[data-draw-result]",
+    ".lottery-result",
+    ".draw-result",
+    ".result-pop",
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '[role="alert"]',
+    '[role="status"]'
+  ];
+  function compactText(value) {
+    return typeof value === "string" ? value.normalize("NFKC").replace(/\s+/g, " ").trim() : "";
+  }
+  function matchesLotteryActionText(value) {
+    const text = compactText(value);
+    return !!text && !auxiliaryLotteryText.test(text) && lotteryActionText.test(text);
+  }
+  function mentionsLotteryAction(value) {
+    return lotteryActionText.test(compactText(value));
+  }
+  function isLotteryPagePath(path) {
+    const text = compactText(path);
+    return lotteryRoute.test(text.split(/[?#]/, 1)[0]) || lotteryRoute.test(text.split("#")[1] ?? "");
+  }
+  function isLearnedLotteryAction(event) {
+    if ((event?.type ?? event?.kind) !== "click" || event.href || event.gesture === "right")
+      return false;
+    if (event.loginAction === "entry" || event.loginAction === "oauth") return false;
+    if (auxiliaryLotteryText.test(event.label ?? "")) return false;
+    return event.checkinAction === "lottery" || matchesLotteryActionText(event.label);
+  }
+  function describeLotteryClick(element, label, path, isPointer = () => false) {
+    if (!element || element.disabled === true || element.getAttribute("aria-disabled") === "true" || element.matches('a[href], [role="link"], label, input[type="radio"], input[type="checkbox"]'))
+      return;
+    const interactive = element.matches(
+      'button, [role="button"], input[type="button"], input[type="submit"], [onclick], [tabindex]:not([tabindex="-1"])'
+    );
+    const accessibleText = [label, element.getAttribute("aria-label"), element.getAttribute("title")].filter(Boolean).join(" ");
+    if (auxiliaryLotteryText.test(accessibleText)) return;
+    if (interactive && matchesLotteryActionText(accessibleText)) return "lottery";
+    const metadata = [
+      element.id,
+      element.getAttribute("class"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-action")
+    ].filter((value) => typeof value === "string").join(" ");
+    if (!graphicLotteryControl.test(metadata) || !interactive && !isPointer(element)) return;
+    if (element.querySelector('button, a[href], [role="button"], input, select')) return;
+    if (isLotteryPagePath(path)) return "lottery";
+    for (let parent = element.parentElement, depth = 0; parent && depth < 2; depth++) {
+      if (parent.matches("body, nav, aside, form, table")) break;
+      const context = compactText(parent.innerText ?? parent.textContent ?? "");
+      if (context.length <= 300 && /抽[奖獎签籤]|开奖|開獎|\blottery\b|\blucky\s+draw\b/i.test(context))
+        return "lottery";
+      parent = parent.parentElement;
+    }
+  }
+  function stableLotteryControlSelector(element, root) {
+    const classes = (element.getAttribute("class") ?? "").split(/\s+/).filter(
+      (name) => /^(?:gift|wheel|scratch|(?:lottery|draw|spin)[-_](?:btn|button|control|gift))$/i.test(name)
+    );
+    for (const name of classes) {
+      const selector = `${element.tagName.toLowerCase()}.${name}`;
+      const matches = root.querySelectorAll(selector);
+      if (matches.length === 1 && matches[0] === element) return selector;
+    }
+  }
+  function snapshotLotteryResults(root, isVisible) {
+    const snapshot = /* @__PURE__ */ new Map();
+    for (const selector of lotteryResultPanels) {
+      let elements;
+      try {
+        elements = root.querySelectorAll(selector);
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
+        if (snapshot.size >= 80) return snapshot;
+        if (!isVisible(element)) continue;
+        snapshot.set(
+          element,
+          compactText(element.innerText ?? element.textContent ?? "").slice(0, 1500)
+        );
+      }
+    }
+    return snapshot;
+  }
+  function matchedOutcome(text) {
+    const normalized = compactText(text).toLowerCase();
+    const words = (candidates) => candidates.filter((word) => normalized.includes(compactText(word).toLowerCase())).slice(0, 4);
+    const already = words(lotteryAlreadyWords);
+    if (already.length) return { kind: "already", words: already };
+    if (/抽奖失败|抽獎失敗|余额不足|餘額不足|\b(?:draw|lottery) failed\b|insufficient (?:balance|funds)|network error/i.test(
+      normalized
+    ))
+      return;
+    const completed = words(lotteryCompletedWords);
+    if (completed.length) return { kind: "success", words: completed };
+  }
+  function resultPanelSelector(element, root, isVisible, selectorFor) {
+    for (const selector2 of lotteryResultPanels) {
+      if (!element.matches(selector2)) continue;
+      const visible = [...root.querySelectorAll(selector2)].filter(isVisible);
+      if (visible.length === 1 && visible[0] === element) return selector2;
+    }
+    const selector = selectorFor?.(element);
+    return typeof selector === "string" && selector.length <= 300 && selector.trim() && !selector.includes("text=") ? selector.trim() : void 0;
+  }
+  function readLotteryResultEvidence(before, root, isVisible, selectorFor) {
+    const current = snapshotLotteryResults(root, isVisible);
+    for (const element of before.keys()) if (!current.has(element)) before.delete(element);
+    for (const [element, text] of current) {
+      if (before.get(element) === text) continue;
+      const outcome = matchedOutcome(text);
+      if (!outcome) continue;
+      const selector = resultPanelSelector(element, root, isVisible, selectorFor);
+      return { ...outcome, ...selector ? { selector } : {} };
+    }
+  }
+
   // src/modules/learning/content.js
   function createLearningAutoContent(__contentScope) {
     const __contentState = bindContentState(__contentScope, [
@@ -1407,7 +2939,7 @@
     function Dm(e) {
       if (e.type === `click`) {
         let t = (0, __contentScope.bm)(e);
-        return t && (0, __contentScope.xm)(t) || e.loginAction && !(e.loginAction === `submit` && __contentScope.gm.test(e.label ?? ``)) || (0, __contentScope.wm)(e) || (0, __contentScope.Em)(e) ? `none` : e.evidence?.kind === `already` ? `already` : e.evidence?.kind === `success` ? `confirmed` : (0, __contentScope.Tm)(e) ? `none` : e.label && __contentScope.gm.test(e.label) ? `action` : `none`;
+        return t && (0, __contentScope.xm)(t) || e.loginAction && !(e.loginAction === `submit` && (__contentScope.gm.test(e.label ?? ``) || isLearnedLotteryAction(e))) || (0, __contentScope.wm)(e) || (0, __contentScope.Em)(e) ? `none` : e.evidence?.kind === `already` ? `already` : e.evidence?.kind === `success` ? `confirmed` : (0, __contentScope.Tm)(e) ? `none` : isLearnedLotteryAction(e) || e.label && !e.href && !mentionsLotteryAction(e.label) && __contentScope.gm.test(e.label) ? `action` : `none`;
       }
       if (e.type === `fill` || e.type === `drag`) {
         let t = e.afterText ?? [];
@@ -1756,6 +3288,15 @@
           if (!(0, __contentScope.dg)(t2, e)) return t2;
         }
       }
+      if (describeLotteryClick(
+        e,
+        (0, __contentScope.yg)(e),
+        (0, __contentScope.bg)(),
+        __contentScope.Eg
+      )) {
+        const selector = stableLotteryControlSelector(e, document);
+        if (selector) return selector;
+      }
       let a = (0, __contentScope.lg)(e);
       return a.length > 0 ? [...a, (0, __contentScope.ug)(e, e.getRootNode())].join(` >>> `) : (0, __contentScope.fg)(e) || e.tagName.toLowerCase();
     }
@@ -1846,7 +3387,7 @@
     function Pg(e = window) {
       return e.top === e.self;
     }
-    function Lg(e, t) {
+    function Lg(e, t, options = {}) {
       let n = e.createElement(`div`);
       n.setAttribute(__contentScope.Fg, t.title), n.style.setProperty(`position`, `fixed`), n.style.setProperty(`z-index`, `2147483647`), n.style.setProperty(`pointer-events`, `none`);
       let r = n.attachShadow({ mode: `closed` }), i = e.createElement(`style`);
@@ -1860,7 +3401,24 @@
       let c = e.createElement(`div`);
       c.className = `hint`;
       let l = e.createElement(`div`);
-      l.className = `warning`, a.append(s, o, c, l), r.append(i, a), (e.body ?? e.documentElement)?.append(n);
+      let identityStatus = e.createElement("div");
+      identityStatus.className = "identity-status";
+      let identityControls = e.createElement("div");
+      identityControls.className = "identity-controls";
+      const identityButtons = [];
+      for (const [field, label] of [
+        ["userId", "选择用户 ID"],
+        ["username", "选择登录名"],
+        ["email", "选择邮箱"]
+      ]) {
+        const button = e.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.addEventListener("click", () => options.onPickIdentity?.(field));
+        identityButtons.push([field, button]);
+        identityControls.append(button);
+      }
+      l.className = `warning`, a.append(s, o, c, l, identityStatus, identityControls), r.append(i, a), (e.body ?? e.documentElement)?.append(n);
       function u(t2) {
         o.textContent = t2.title, c.textContent = t2.hint, l.textContent = t2.warning ?? ``, s.replaceChildren(
           ...t2.steps.map((t3, n2) => {
@@ -1884,16 +3442,26 @@
           l.textContent ?? ``
         ].filter((e2) => e2.trim().length > 0).join(` `),
         update: u,
+        updateIdentity(text, picking) {
+          identityStatus.textContent = text;
+          for (const [field, button] of identityButtons)
+            button.setAttribute("aria-pressed", String(field === picking));
+        },
         destroy: () => n.remove()
       };
     }
     function Rg(e = {}) {
-      let t = e.doc ?? document, n = e.canRender ?? __contentScope.Pg, r = `checkin`, i = [], a = null;
+      let t = e.doc ?? document, n = e.canRender ?? __contentScope.Pg, r = `checkin`, i = [], a = null, identityController, identityStatus = "自动查找当前用户的身份，也可点选页面中的身份字段", identityPicking = null;
       function o() {
         return (0, __contentScope.Bm)((0, __contentScope.jm)(i, r));
       }
       function s() {
-        return n() ? (a ??= (0, __contentScope.Lg)(t, o()), a) : null;
+        if (!n()) return null;
+        a ??= (0, __contentScope.Lg)(t, o(), {
+          onPickIdentity: (field) => identityController?.pickIdentity?.(field)
+        });
+        a.updateIdentity?.(identityStatus, identityPicking);
+        return a;
       }
       return {
         begin(e2) {
@@ -1902,26 +3470,37 @@
         push(e2) {
           i.push(e2), s()?.update(o());
         },
+        setIdentityController(controller) {
+          identityController = controller;
+        },
+        setIdentityStatus(text, picking) {
+          identityStatus = text;
+          identityPicking = picking;
+          s()?.updateIdentity?.(text, picking);
+        },
         end() {
-          a?.destroy(), a = null, i = [];
+          a?.destroy(), a = null, i = [], identityController = void 0;
+          identityStatus = "自动查找当前用户的身份，也可点选页面中的身份字段";
+          identityPicking = null;
         }
       };
     }
-    function createLearningIdentityMonitor(send) {
+    function createLearningIdentityMonitor(send, options = {}) {
       let timer, previous, sent, pending = Promise.resolve(), failure;
       function observe() {
-        const identity = (0, __contentScope.Bi)();
+        const identity = options.readVisible ? options.readVisible() : (0, __contentScope.Bi)();
         const identityPath = location.pathname + location.hash;
-        if (!identity?.userId) {
+        const sampleKey = identitySampleKey(identity);
+        if (!sampleKey) {
           previous = void 0;
           sent = void 0;
           return;
         }
         const key = JSON.stringify([
           identityPath,
-          identity.userId,
-          identity.username,
-          identity.email
+          sampleKey,
+          identity.identitySource,
+          identity.selectedFields
         ]);
         if (key !== previous) {
           previous = key;
@@ -1932,7 +3511,9 @@
         pending = pending.then(() => send({ identity, path: identityPath })).then((result) => {
           if (!result?.ok) throw Error(result?.error || "学习页用户 ID 未保存");
           if (result.ignored) sent = void 0;
+          failure = void 0;
         }).catch((error) => {
+          sent = void 0;
           failure = error;
         });
       }
@@ -1956,11 +3537,12 @@
         }
       };
     }
-    function zg(e, t, n, onIdentity) {
-      let r = /* @__PURE__ */ new Set(), i, a = new __contentScope.Ng({
+    function zg(e, t, n, onIdentity, session = {}) {
+      let r = /* @__PURE__ */ new Set(), i, events = [...session.events ?? []], a = new __contentScope.Ng({
         kind: e,
         personalTexts: n,
         onEvent(e2) {
+          events.push(e2);
           let n2 = t(e2).then(
             (e3) => {
               e3.ok || (i ??= e3.error ?? `学习事件未保存`);
@@ -1972,19 +3554,40 @@
           r.add(n2), n2.then(() => r.delete(n2));
         }
       });
-      let identityMonitor = onIdentity && window.top === window ? (0, __contentScope.createLearningIdentityMonitor)(onIdentity) : null;
+      const identityTools = onIdentity && session.identitySite && window.top === window ? new IdentitySourceLearner({
+        site: session.identitySite,
+        send: onIdentity,
+        requestIdentity: (site, token, options) => (0, __contentScope.qi)(site, token, options),
+        getProgress: () => ({
+          ...(0, __contentScope.jm)(events, e),
+          loginAt: [...events].reverse().find(
+            (event) => event.loginAction === "submit" || event.loginAction === "oauth" || event.type === "fill" && event.fieldRole === "password" && event.key === "Enter"
+          )?.at
+        }),
+        onStatus: (text, picking) => __contentScope.Bg.setIdentityStatus(text, picking),
+        wait: (ms) => (0, __contentScope.w)(ms)
+      }) : null;
+      let identityMonitor = onIdentity && window.top === window ? (0, __contentScope.createLearningIdentityMonitor)(
+        identityTools ? (observation) => identityTools.reportVisible(observation) : onIdentity,
+        identityTools ? { readVisible: () => identityTools.readVisible() } : {}
+      ) : null;
       return {
+        pickIdentity: (field) => identityTools?.pick(field),
+        isPickingIdentity: () => !!identityTools?.picking,
         start: () => {
+          identityTools?.start();
           a.attach();
           identityMonitor?.start();
         },
         stop: () => {
           a.detach();
           identityMonitor?.stop();
+          identityTools?.stop();
         },
         async flush() {
           for (a.flushPending(); r.size; ) await Promise.all([...r]);
           await identityMonitor?.flush();
+          await identityTools?.flush();
           if (i) throw Error(i);
           return {
             challengeSeen: a.sawChallengeField,
@@ -2010,9 +3613,10 @@
           type: `LEARN_IDENTITY`,
           runId: e.runId,
           observation
-        })
+        }),
+        e
       );
-      __contentScope.Vg = { ...t, runId: e.runId }, t.start(), __contentScope.Bg.begin(e);
+      __contentScope.Vg = { ...t, runId: e.runId }, __contentScope.Bg.begin(e), __contentScope.Bg.setIdentityController(t), t.start();
     }
     function Wg() {
       return (0, __contentScope.z)().some((e) => {
@@ -2097,8 +3701,8 @@
         stopRecording() {
           return (0, __contentScope.Hg)();
         },
-        createIdentityMonitor(send) {
-          return (0, __contentScope.createLearningIdentityMonitor)(send);
+        createIdentityMonitor(send, options) {
+          return (0, __contentScope.createLearningIdentityMonitor)(send, options);
         },
         createRecorder(...args) {
           return (0, __contentScope.zg)(...args);
@@ -2455,6 +4059,7 @@
               mouseDown = null;
               pointerUp = null;
               pendingKey = null;
+              lotteryActionAt = null;
               unlearned = [];
               isPersonal;
               constructor(e) {
@@ -2518,13 +4123,24 @@
                 return this.scrollState = null, this.pendingScroll = null, this.scrollTimer &&= (clearTimeout(this.scrollTimer), null), e;
               }
               currentElement(e) {
-                let t = null;
+                if (e.composedPath().some(
+                  (node) => node?.hasAttribute?.("data-checkin-learning-guide") || node?.hasAttribute?.("data-checkin-identity-picker")
+                ))
+                  return null;
+                let t = null, lotteryControl = null;
                 for (let n of e.composedPath())
                   if (n instanceof HTMLElement) {
                     if ((0, __contentScope.Tg)(n)) return n;
                     !t && (0, __contentScope.Eg)(n) && (t = n);
+                    if (!lotteryControl && describeLotteryClick(
+                      n,
+                      (0, __contentScope.yg)(n),
+                      (0, __contentScope.bg)(),
+                      __contentScope.Eg
+                    ))
+                      lotteryControl = n;
                   }
-                return t;
+                return lotteryControl ?? t;
               }
               recordNavigation = () => {
                 let e = (0, __contentScope.bg)();
@@ -2688,7 +4304,7 @@
                   this.pointerUp = null;
                 }
                 let n = this.currentElement(e);
-                if (!n) return;
+                if (!n || (0, __contentScope.R)(n)) return;
                 if ((0, __contentScope.Ql)(n)) {
                   this.unlearned.push(
                     `点击人机验证控件：这一步不会写进流程，回放时由自动验证接管，可能需要人工完成`
@@ -2697,17 +4313,19 @@
                 }
                 let r = n instanceof HTMLAnchorElement ? n.href : void 0;
                 if (r && /^(?:javascript:|mailto:|tel:)/i.test(r)) return;
-                let i = r ? (0, __contentScope.xg)(r) : void 0, a = (0, __contentScope.bg)(), o = (0, __contentScope._g)(n, this.isPersonal), s = (0, __contentScope.yg)(n), c = this.fused || this.learningKind === `login` ? (0, __contentScope.Mg)(n, (0, __contentScope.vg)(n), i, this.passwordSeen) : void 0, l = Date.now(), u = this.learningKind === `login` ? [] : (0, __contentScope.qh)(), d = this.takeScroll(), f = (0, __contentScope.Lh)(n), p = (0, __contentScope.Bh)(
+                let i = r ? (0, __contentScope.xg)(r) : void 0, a = (0, __contentScope.bg)(), o = (0, __contentScope._g)(n, this.isPersonal), s = (0, __contentScope.yg)(n), lotteryAction = this.learningKind !== `login` && describeLotteryClick(n, s, a, __contentScope.Eg), c = this.fused || this.learningKind === `login` ? (0, __contentScope.Mg)(n, (0, __contentScope.vg)(n), i, this.passwordSeen) : void 0, l = Date.now(), u = this.learningKind === `login` ? [] : (0, __contentScope.qh)(), lotteryBefore = lotteryAction ? snapshotLotteryResults(document, __contentScope.Kh) : null, d = this.takeScroll(), f = (0, __contentScope.Lh)(n), p = (0, __contentScope.Bh)(
                   (0, __contentScope.Vh)(f.scrolled ? f : d?.pageY ? d : f)
                 ), m = (0, __contentScope.hg)(n, e.clientX, e.clientY), h = this.pointerUp?.holdMs ?? (this.pointerDown ? l - this.pointerDown.at : void 0), g;
                 e.detail >= 2 ? g = `double` : e.button === 2 ? g = `right` : h !== void 0 && h >= 500 && (g = `long-press`);
                 let _ = this.takePendingKey(n), v = (0, __contentScope.gg)(n);
+                if (lotteryAction) this.lotteryActionAt = l;
                 if (this.onEvent({
                   ...p,
                   type: `click`,
                   selector: o,
                   label: s,
                   path: a,
+                  ...lotteryAction ? { checkinAction: lotteryAction } : {},
                   ...i ? { href: i } : {},
                   ...c ? { loginAction: c } : {},
                   ...m ? { anchor: m } : {},
@@ -2720,24 +4338,32 @@
                   return;
                 let y = () => {
                   if (!this.attached || (0, __contentScope.bg)() !== a) return;
+                  if (lotteryAction && this.lotteryActionAt !== l) return;
                   let e2 = (0, __contentScope.Jh)(
                     u,
                     (0, __contentScope.qh)(),
                     (0, __contentScope.Sg)()
-                  ), t2 = (0, __contentScope.Wh)((0, __contentScope.Sg)(), __contentScope.it.test(s));
+                  ), t2 = lotteryBefore ? readLotteryResultEvidence(
+                    lotteryBefore,
+                    document,
+                    __contentScope.Kh,
+                    __contentScope.fg
+                  ) : (0, __contentScope.Wh)((0, __contentScope.Sg)());
+                  if (lotteryBefore) e2 = t2?.words;
                   (e2 || t2) && this.onEvent({
                     ...p,
                     type: `click`,
                     selector: o,
                     label: s,
                     path: a,
+                    ...lotteryAction ? { checkinAction: lotteryAction } : {},
                     ...i ? { href: i } : {},
                     ...e2 ? { afterText: e2 } : {},
                     ...t2 ? { evidence: t2 } : {},
                     at: l
                   });
                 };
-                if (this.schedule(y), __contentScope.it.test(s))
+                if (this.schedule(y), lotteryAction)
                   for (let e2 of [2500, 6e3, 12e3]) this.schedule(y, e2);
               };
               onInput = (e) => {
@@ -2860,6 +4486,15 @@
 .step-number { opacity: .7; margin-right: 2px; }
 .hint { margin-top: 2px; color: #cbd5e1; }
 .warning { margin-top: 4px; color: #fde68a; }
+.identity-status { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(148,163,184,.3); color: #bae6fd; overflow-wrap: anywhere; }
+.identity-controls { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.identity-controls button {
+  pointer-events: auto !important;
+  font: inherit; color: #f8fafc; background: #334155;
+  border: 1px solid #64748b; border-radius: 5px; padding: 3px 6px; cursor: pointer;
+}
+.identity-controls button:hover { background: #475569; }
+.identity-controls button[aria-pressed="true"] { color: #0f172a; background: #fbbf24; border-color: #fbbf24; }
 `;
           }
         },
@@ -2879,11 +4514,285 @@
     };
   }
 
+  // src/shared/login-state.js
+  function classifyLoginState(page = {}, samples = []) {
+    const result = (status, reason, detail, identity) => ({
+      status,
+      reason,
+      detail,
+      ...identity ? { identity } : {}
+    });
+    if (page.sameOrigin !== true)
+      return result("pending", "oauth_pending", "OAuth 尚未返回本站，等待授权流程完成");
+    if (page.secondFactor)
+      return result("blocked", "second_factor_pending", `登录后进入${page.secondFactor}步骤`);
+    if (page.challenge)
+      return result(
+        "blocked",
+        "challenge_pending",
+        `${page.challenge.kind ?? "安全验证"}尚未完成，暂不确认登录成功`
+      );
+    if (page.completionRequired)
+      return result(
+        "blocked",
+        "account_completion_required",
+        "授权后仍需完成注册、绑定或补充账号资料"
+      );
+    if (page.loginError)
+      return result("failed", "login_rejected", `站点返回登录失败：${page.loginError}`);
+    const current = samples.at(-1);
+    if (current?.identityConflict)
+      return result(
+        "failed",
+        "identity_conflict",
+        `当前登录身份证据冲突：${current.identityConflict}`,
+        current
+      );
+    if (page.loginForm)
+      return result("pending", "login_form_visible", "页面仍显示登录表单，尚未完成登录");
+    if (identitySampleKey(samples.at(-2)) && identitySampleKey(current) && !stableIdentitySamples(samples.at(-2), current))
+      return result(
+        "pending",
+        "identity_unstable",
+        "当前登录身份在连续读取中发生变化，暂不采用页面成功控件",
+        current
+      );
+    if (page.successIndicator)
+      return result("authenticated", "success_indicator", "命中可见的本站登录成功标志");
+    if (page.logoutControl)
+      return result(
+        "authenticated",
+        "logout_control",
+        `页面显示可见的退出登录控件${page.logoutSource ? `（${page.logoutSource}）` : ""}`
+      );
+    if (page.checkinControl)
+      return result("authenticated", "checkin_control", "页面显示本站配置的签到或已签到控件");
+    if (["api", "visible"].includes(current?.source) && stableIdentitySamples(samples.at(-2), current))
+      return result(
+        "authenticated",
+        current.source === "api" ? "stable_api_identity" : "stable_page_identity",
+        current.source === "api" ? `当前用户接口${current.endpoint ? ` ${current.endpoint} ` : ""}连续两次返回一致的${current.userId ? `用户 ID ${current.userId}` : "完整登录标识"}` : `当前账号资料连续两次显示一致的${current.userId ? `用户 ID ${current.userId}` : "完整登录标识"}`,
+        current
+      );
+    if (identitySampleKey(current))
+      return result(
+        "pending",
+        samples.length > 1 ? "identity_unstable" : "identity_verifying",
+        samples.length > 1 ? "当前登录身份尚未形成连续一致的有效样本" : "已读到当前账号身份，正在重新读取以确认会话稳定",
+        current
+      );
+    if (page.accountShellVisible)
+      return result(
+        "pending",
+        "account_shell_unverified",
+        `${page.accountShellSource ?? "当前账号区域"}已显示，正在核验当前会话和账号身份`
+      );
+    if (page.loginEntry)
+      return result("pending", "login_entry_visible", "页面仍显示登录入口，等待本站更新登录状态");
+    return result(
+      "pending",
+      "success_evidence_missing",
+      "未取得可见登录成功控件或连续一致的当前用户身份"
+    );
+  }
+  function identityProbePendingState(site, messages) {
+    const source = readIdentitySource(site);
+    if (!source?.endpoint) return null;
+    let endpoints;
+    try {
+      const url = new URL(source.endpoint, site.loginUrl);
+      endpoints = [
+        `${url.origin}${url.pathname}`,
+        ...url.origin === new URL(site.loginUrl).origin ? [url.pathname] : []
+      ];
+    } catch {
+      return null;
+    }
+    const message = messages.filter(
+      (text) => typeof text === "string" && endpoints.some((endpoint) => text.startsWith(`身份接口 ${endpoint}（`))
+    ).at(-1);
+    if (!message) return null;
+    let reason;
+    if (/没有可用的会话 Token/.test(message)) reason = "session_token_missing";
+    else if (/HTTP (?:401|403)\b/.test(message)) reason = "session_probe_rejected";
+    else if (/未返回有效的当前用户字段|用户资料解析失败/.test(message))
+      reason = "identity_response_unusable";
+    else if (/HTTP |HTML|不是 JSON|请求失败|请求超时|响应发生跳转/.test(message))
+      reason = "identity_api_unavailable";
+    return reason ? {
+      status: "pending",
+      reason,
+      detail: `${message}；等待当前会话或资料页身份核验`
+    } : null;
+  }
+  var LoginStateResolver = class {
+    constructor({
+      readPage,
+      readIdentity,
+      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now = () => Date.now()
+    }) {
+      Object.assign(this, { readPage, readIdentity, sleep, now });
+    }
+    async wait(site, {
+      timeoutMs = 8e3,
+      pollMs = 300,
+      identityTimeoutMs = 1500,
+      stopOnLoginForm = false,
+      diagnostics,
+      serverOnly = false
+    } = {}) {
+      const deadline = this.now() + Math.max(0, timeoutMs);
+      let samples = [];
+      let lastIdentityReason;
+      let lastProbeState;
+      let state;
+      for (; ; ) {
+        const page = this.readPage(site);
+        state = classifyLoginState(page, samples);
+        if (state.status !== "pending" || state.reason === "oauth_pending" || stopOnLoginForm && state.reason === "login_form_visible")
+          return state;
+        if (typeof this.readIdentity === "function" && !page.loginForm && this.now() < deadline) {
+          let identity;
+          const messages = [];
+          try {
+            identity = await this.readIdentity(site, {
+              timeoutMs: Math.min(identityTimeoutMs, Math.max(1, deadline - this.now())),
+              discover: true,
+              serverOnly,
+              diagnostics: {
+                push: (message) => {
+                  messages.push(message);
+                  diagnostics?.push?.(message);
+                }
+              }
+            });
+          } catch {
+          }
+          if (identity?.identityConflict || identitySampleKey(identity)) {
+            lastProbeState = null;
+            samples = [...samples.slice(-1), identity];
+            state = classifyLoginState(this.readPage(site), samples);
+            if (["identity_verifying", "identity_unstable"].includes(state.reason))
+              lastIdentityReason = state;
+            if (state.status !== "pending" || state.reason === "oauth_pending") return state;
+          } else {
+            samples = [];
+            state = classifyLoginState(this.readPage(site));
+            lastProbeState = identityProbePendingState(site, messages) ?? lastProbeState;
+            if (state.status !== "pending" || state.reason === "oauth_pending") return state;
+          }
+        }
+        if (this.now() >= deadline) {
+          if (["identity_verifying", "identity_unstable"].includes(state.reason) || lastIdentityReason)
+            return {
+              status: "pending",
+              reason: "identity_unstable",
+              detail: "核验等待结束，当前登录身份仍未形成连续一致的有效样本"
+            };
+          if (lastProbeState && ["success_evidence_missing", "account_shell_unverified"].includes(state.reason))
+            return {
+              ...lastProbeState,
+              detail: state.reason === "account_shell_unverified" ? `${state.detail}；${lastProbeState.detail}` : lastProbeState.detail
+            };
+          return state;
+        }
+        await this.sleep(Math.min(pollMs, Math.max(1, deadline - this.now())));
+      }
+    }
+  };
+  function loginStateLog(state) {
+    return `登录状态核验[${state.reason}]：${state.detail}`;
+  }
+
+  // src/shared/site-login-recipes.js
+  function withSiteIdentityRecipe(site) {
+    let origin;
+    try {
+      origin = new URL(site.loginUrl).origin;
+    } catch {
+      return site;
+    }
+    if (origin !== "https://orevx.ai") return site;
+    const source = readIdentitySource(site) ?? {};
+    if (source.endpoint) return site;
+    return {
+      ...site,
+      identitySource: {
+        ...source,
+        storageKey: source.storageKey ?? "auth-user",
+        tokenKey: source.tokenKey ?? "auth-token",
+        tokenHeader: source.tokenHeader ?? "Authorization",
+        tokenPrefix: source.tokenPrefix ?? "Bearer ",
+        pagePath: source.pagePath ?? "/user/profile",
+        // An absent/blank endpoint is a request to use the validated current-user location.
+        endpoint: "https://server.orevx.ai/api/user/me"
+      }
+    };
+  }
+  function readSiteLoginEvidence(site, document2, location2, isVisible) {
+    let origin;
+    try {
+      origin = new URL(site.loginUrl).origin;
+    } catch {
+      return {};
+    }
+    if (origin !== "https://orevx.ai" || location2.origin !== origin || !/^\/(?:user|dashboard)(?:\/|$)/i.test(location2.pathname))
+      return {};
+    const visible = (node) => {
+      if (!node || !isVisible(node)) return false;
+      for (let parent = node; parent; parent = parent.parentElement)
+        if (parent.hidden || parent.getAttribute?.("aria-hidden") === "true" || parent.hasAttribute?.("inert"))
+          return false;
+      return true;
+    };
+    const enabled = (node) => visible(node) && !node.disabled && !node.hasAttribute?.("disabled") && node.getAttribute?.("aria-disabled") !== "true" && (!node.hasAttribute?.("data-disabled") || node.getAttribute?.("data-disabled") === "false");
+    const userControl = [...document2.querySelectorAll?.('button, [role="button"]') ?? []].find(
+      (node) => enabled(node) && !node.closest?.('table, [role="table"], [role="list"], [role="listitem"]') && /^(?:当前用户|目前使用者|現在のユーザー|현재 사용자|Current user|Utilisateur actuel)\s*[:：]\s*\S+/i.test(
+        node.getAttribute?.("aria-label") ?? ""
+      )
+    );
+    if (!userControl) return {};
+    const actionKey = "dashboard-account-action:sign-out";
+    const keyedAction = (node, accountMenu) => ["id", "data-key", "data-collection-key"].some((attribute) => {
+      let key = node.getAttribute?.(attribute) ?? "";
+      try {
+        key = decodeURIComponent(key);
+      } catch {
+      }
+      return key === actionKey || key.endsWith(`-${actionKey}`) || accountMenu && key === "sign-out";
+    });
+    const menus = [...document2.querySelectorAll?.('[data-slot="sidebar-menu"]') ?? []].filter(
+      visible
+    );
+    const logoutControl = menus.some((menu) => {
+      const accountMenu = menu.getAttribute?.("role") === "treegrid" || menu.getAttribute?.("aria-label") === "Account actions";
+      const actions = [...menu.querySelectorAll?.('[data-slot="sidebar-menu-item"]') ?? []].filter(
+        enabled
+      );
+      return actions.some(
+        (node) => keyedAction(node, accountMenu) || /^(?:sign[\s-]?out|log[\s-]?out|退出\s*(?:当前\s*)?(?:登录|账号|账户)|注销\s*登录|登出)[.!。！]?$/i.test(
+          (node.getAttribute?.("aria-label") ?? "").trim()
+        )
+      );
+    });
+    return {
+      accountShellVisible: true,
+      accountShellSource: "Orevx 可见的当前用户账号栏",
+      logoutControl,
+      ...logoutControl ? { logoutSource: "Orevx 已适配的侧栏退出操作" } : {}
+    };
+  }
+
   // src/modules/checkin/content.js
   function createCheckinAutoContent(__contentScope) {
+    let identityResolver;
+    const directLoginLabel = /^(?:登录|登陆|登入|立即登录|继续登录|前往登录|sign[\s-]?in|log[\s-]?in)[.!。！›»>→]*$/i;
     const __contentState = bindContentState(__contentScope, [
       "detectPageLogin",
       "readLoginOptions",
+      "readLoginSnapshot",
+      "readLoginState",
       "hasVisibleLogoutControl",
       "describeLoginControl",
       "findSelectedLoginControl",
@@ -3802,14 +5711,25 @@
       return (0, __contentScope.V)(e.selectors.password, document) ?? (0, __contentScope.Tn)(e.selectors.username, document);
     }
     function On(e) {
-      if ((0, __contentScope.V)(e.selectors.password, document) && (0, __contentScope.kn)())
-        return true;
-      let t = (0, __contentScope.Tn)(e.selectors.username, document);
+      const selectors = e.selectors ?? {};
+      if ((0, __contentScope.V)(selectors.password, document) && (0, __contentScope.kn)()) return true;
+      let t = (0, __contentScope.Tn)(selectors.username, document);
       if (!t) return false;
       let n = t.element;
-      if (/^(?:username|email)$/i.test(n.autocomplete) || n.type.toLowerCase() === `email`) return true;
       let r = (0, __contentScope.Cn)(n);
-      return __contentScope.nn.test(r) && !__contentScope.rn.test(r);
+      if (__contentScope.rn.test(r)) return false;
+      if (!/^(?:username|email)$/i.test(n.autocomplete) && n.type.toLowerCase() !== `email` && !__contentScope.nn.test(r))
+        return false;
+      const region = n.form ?? n.closest?.(`form, [role="dialog"], main, section`) ?? document, heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`), title = heading?.innerText ?? heading?.textContent ?? ``, registration = /注册|创建(?:新)?账号|sign\s*up|create\s+(?:an?\s+)?account/i.test(title), loginRoute = /(?:^|\/)(?:login|sign-?in)(?:\/|$)/i.test(
+        `${location.pathname}${location.hash.replace(/^#/, `/`)}`
+      ), loginHeading = /登录|登入|sign\s*in|log\s*in/i.test(title), loginAction = [
+        ...region.querySelectorAll?.(`button, [role="button"], input[type="submit"]`) ?? []
+      ].some(
+        (control) => (0, __contentScope.O)(control) && /^(?:登录|登陆|登入|立即登录|继续登录|sign\s*in|log\s*in)$/i.test(
+          (control.innerText || control.textContent || control.value || ``).trim()
+        )
+      );
+      return !registration && (loginRoute || loginHeading || loginAction);
     }
     function kn() {
       return ![...document.querySelectorAll(`input[type="password"]`)].filter((e) => !e.disabled && !e.readOnly && (0, __contentScope.O)(e)).some(
@@ -3832,6 +5752,11 @@
       let { element: t } = e;
       return t.id ? `#${t.id}` : t.name ? `input[name="${t.name}"]` : t.autocomplete ? `input[autocomplete="${t.autocomplete}"]` : e.selector;
     }
+    function isLoginHelpControl(control) {
+      return /为什么|为何|如何|怎么|怎样|教程|指南|帮助|文档|常见(?:问答|问题)|问题解答|\b(?:how|why|what|faq|help|documentation|docs?|tutorial|guide)\b|[?？]\s*$/i.test(
+        (0, __contentScope.Rn)(control)
+      );
+    }
     function Nn() {
       let e;
       try {
@@ -3840,7 +5765,7 @@
         return null;
       }
       for (let t of document.querySelectorAll(`a[href]`))
-        if ((0, __contentScope.O)(t))
+        if ((0, __contentScope.O)(t) && !isLoginHelpControl(t))
           try {
             let n = new URL(t.href, e.href), r = n.pathname === e.pathname && n.search === e.search;
             if (n.origin === e.origin && !r && /(?:^|\/)(?:login|sign-?in)(?:\/|$)/i.test(n.pathname))
@@ -3851,9 +5776,9 @@
     }
     function In() {
       for (let e of document.querySelectorAll(`button, [role="button"]`)) {
-        if (!(0, __contentScope.O)(e)) continue;
-        let t = (e.innerText || e.textContent || ``).replace(/\s+/g, ``).toLowerCase();
-        if (t && !__contentScope.Fn.some((e2) => t.includes(e2.replace(/\s+/g, ``))) && __contentScope.Pn.some((e2) => t.includes(e2)))
+        if (!(0, __contentScope.O)(e) || isLoginHelpControl(e)) continue;
+        let t = (0, __contentScope.Rn)(e).replace(/\s+/g, ``).toLowerCase();
+        if (t && !__contentScope.Fn.some((e2) => t.includes(e2.replace(/\s+/g, ``))) && (directLoginLabel.test(t) || __contentScope.Pn.some((e2) => t.includes(e2))))
           return e;
       }
       return null;
@@ -3925,7 +5850,7 @@
         ...document.querySelectorAll(
           `button, a[href], [role="button"], input[type="button"], input[type="submit"]`
         )
-      ].filter((e2) => (0, __contentScope.O)(e2)).filter((t) => {
+      ].filter((e2) => (0, __contentScope.O)(e2) && !isLoginHelpControl(e2)).filter((t) => {
         let n = (0, __contentScope.zn)(t);
         return e === `github` ? __contentScope.hn.test(n) : e !== `passkey` || __contentScope._n.test(n);
       }).map((e2) => ({
@@ -3938,8 +5863,9 @@
       )[0]?.element ?? null;
     }
     function describeLoginControl(control) {
-      if (!(0, __contentScope.O)(control)) return null;
+      if (!(0, __contentScope.O)(control) || isLoginHelpControl(control)) return null;
       const matchText = (0, __contentScope.Rn)(control).replace(/\s+/g, ` `).trim().slice(0, 120);
+      if (directLoginLabel.test(matchText)) return null;
       let hrefPath = ``, url = null;
       try {
         if (control instanceof HTMLAnchorElement && control.href) {
@@ -4018,7 +5944,10 @@
           ...hrefPath ? { hrefPath } : {}
         };
       }
-      if (!authPath && !/oauth|openid|oidc|sso|第三方|授权/i.test(semantic)) return null;
+      const authorizationAction = /^(?:第三方(?:账号)?登录|授权(?:登录|并登录)?|(?:使用|通过|用).+(?:登录|登陆|登入|继续)|(?:sign[\s-]?in|log[\s-]?in)\s+with\s+.+|continue\s+with\s+.+|(?:oauth|openid|oidc|sso)(?:\s+(?:login|sign[\s-]?in))?)[.!。！›»>→]*$/i.test(
+        matchText
+      );
+      if (!authPath && !authorizationAction) return null;
       let hash = 2166136261;
       for (const char of `${matchText}|${hrefPath}`)
         hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
@@ -4154,7 +6083,7 @@
       return null;
     }
     function nr() {
-      return (0, __contentScope.D)(__contentScope.$t) ? `二次验证验证码` : null;
+      return (0, __contentScope.D)(__contentScope.$t) || typeof __contentScope.zp === `function` && (0, __contentScope.zp)() ? `二次验证验证码` : null;
     }
     function rr(e) {
       try {
@@ -4173,10 +6102,88 @@
       return (0, __contentScope.ar)(e);
     }
     function ar(e) {
-      if ((0, __contentScope.On)(e) || (0, __contentScope.nr)()) return false;
-      if (e.successIndicator && (0, __contentScope.D)(e.successIndicator)) return true;
-      let t = e.checkin;
-      return t?.method === `button` && (t.buttonSelector && (0, __contentScope.D)(t.buttonSelector) || t.alreadySelector && (0, __contentScope.D)(t.alreadySelector)) || (0, __contentScope.Ln)() || (0, __contentScope.rr)(e) ? true : (0, __contentScope.Dn)(e) || (0, __contentScope.Nn)() ? false : t?.method === `api`;
+      return classifyLoginState((0, __contentScope.readLoginSnapshot)(e)).status === `authenticated`;
+    }
+    function readLoginSnapshot(site) {
+      const visible = (selector) => {
+        if (!selector) return false;
+        const control = (0, __contentScope.D)(selector);
+        return !!control && (0, __contentScope.O)(control);
+      }, authenticationRoute = /(?:^|\/)(?:login|sign-?in|auth|oauth|callback)(?:\/|$)/i.test(
+        `${location.pathname}${location.hash.replace(/^#/, `/`)}`
+      ), profileEditorContext = /(?:^|\/)(?:profile|personal|settings|account(?:-settings)?|security-password)(?:\/|$)/i.test(
+        location.pathname
+      ), siteEvidence = readSiteLoginEvidence(
+        site,
+        document,
+        location,
+        (node) => (0, __contentScope.O)(node)
+      ), logoutControl = (0, __contentScope.hasVisibleLogoutControl)(site, siteEvidence), authenticationFormHeading = [
+        ...document.querySelectorAll?.(`form, [role="dialog"]`) ?? []
+      ].some((region) => {
+        if (!(0, __contentScope.O)(region)) return false;
+        const heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`), title = [region.getAttribute?.(`aria-label`), heading?.innerText ?? heading?.textContent].filter(Boolean).join(` `);
+        return /登录|登入|sign\s*in|log\s*in/i.test(title) && !/修改|重置|change|reset|update/i.test(title);
+      }), loginForm = (0, __contentScope.On)(site) && (!profileEditorContext || authenticationRoute || authenticationFormHeading), providerEntry = [
+        ...document.querySelectorAll(
+          `button, a[href], [role="button"], input[type="button"], input[type="submit"]`
+        )
+      ].some(
+        (control) => !control.closest?.(`footer, [role="contentinfo"]`) && !!(0, __contentScope.describeLoginControl)(control)
+      ), loginLink = (0, __contentScope.Nn)(), loginButton = (0, __contentScope.In)(), loginEntry = providerEntry || !!loginButton && !loginButton.closest?.(`footer, [role="contentinfo"]`) || !!loginLink && !loginLink.closest?.(`footer, [role="contentinfo"]`), secondFactor = (0, __contentScope.nr)(), challenge = typeof __contentScope.Nu === `function` ? (0, __contentScope.Nu)(false) : null, completionRequired = [
+        ...document.querySelectorAll?.(`form, [role="dialog"], main`) ?? []
+      ].some((region) => {
+        if (!(0, __contentScope.O)(region)) return false;
+        const heading = region.querySelector?.(`h1, h2, h3, [role="heading"]`), title = heading?.innerText ?? heading?.textContent ?? ``;
+        return /^(?:完成(?:注册|资料|账号设置)|补充(?:资料|信息)|绑定(?:邮箱|手机)|注册|创建(?:新)?账号|complete\s+(?:your\s+)?(?:profile|account|registration)|finish\s+(?:registration|setup)|create\s+(?:an?\s+)?account|sign\s*up)/i.test(
+          title.trim()
+        ) && [...region.querySelectorAll?.(`input, select, textarea`) ?? []].some(
+          (input) => !input.disabled && !input.readOnly && input.type !== `hidden` && (0, __contentScope.O)(input)
+        );
+      }), failureNodes = document.querySelectorAll?.(
+        `[role="alert"], [aria-live="assertive"], .error-message, .semi-toast-content, .semi-notification-content, .ant-message-notice-content, .ant-notification-notice-message`
+      ), authenticationContext = loginForm || authenticationRoute || loginEntry && !logoutControl && !siteEvidence.accountShellVisible, loginError = [
+        (0, __contentScope.Un)(),
+        ...[...failureNodes ?? []].filter((node) => (0, __contentScope.O)(node)).map((node) => node.innerText || node.textContent || ``)
+      ].filter(Boolean).map((text) => text.replace(/\s+/g, ` `).trim()).find((text) => {
+        if (/登录(?:状态|会话)?.{0,16}(?:已失效|已过期|过期)|(?:当前|登录)?会话.{0,16}(?:过期|失效)|请重新登录|\b(?:your\s+)?(?:login\s+)?session\s+(?:has\s+)?expired\b|(?:log|sign)\s*in\s+again/i.test(
+          text
+        ))
+          return true;
+        if (profileEditorContext && !authenticationContext && /密码|password|绑定|解绑|\bbind\b|\bunlink\b|\bconnect\b/i.test(text))
+          return false;
+        if (authenticationContext) return __contentScope.Hn.test(text);
+        if (/签到|打卡|抽奖|余额|额度|领取|兑换|check[\s-]?in|daily\s+(?:bonus|reward)|balance|quota|points|credits|claim/i.test(
+          text
+        ))
+          return false;
+        return /(?:用户名|账号|邮箱|密码|凭据).{0,16}(?:错误|不正确|无效|不存在|锁定)|(?:invalid|incorrect|wrong|bad).{0,16}(?:password|credentials?)|(?:password|credentials?).{0,16}(?:invalid|incorrect|wrong)|(?:登录|authentication|authorization|oauth).{0,24}(?:失败|拒绝|failed|denied|rejected)/i.test(
+          text
+        );
+      })?.slice(0, 160);
+      return {
+        sameOrigin: location.origin === (0, __contentScope.Dr)(site),
+        loginForm,
+        loginEntry,
+        secondFactor,
+        challenge,
+        completionRequired,
+        loginError,
+        successIndicator: visible(site.successIndicator),
+        logoutControl,
+        logoutSource: siteEvidence.logoutSource,
+        accountShellVisible: siteEvidence.accountShellVisible,
+        accountShellSource: siteEvidence.accountShellSource,
+        checkinControl: site.checkin?.method === `button` && (visible(site.checkin.buttonSelector) || visible(site.checkin.alreadySelector))
+      };
+    }
+    async function readLoginState(site, options = {}) {
+      const resolver = new LoginStateResolver({
+        readPage: (selected) => (0, __contentScope.readLoginSnapshot)(selected),
+        readIdentity: (selected, readOptions) => (0, __contentScope.qi)(selected, void 0, readOptions),
+        sleep: (ms) => (0, __contentScope.w)(ms)
+      });
+      return resolver.wait(withSiteIdentityRecipe(site), options);
     }
     async function U(e, t, n) {
       await (0, __contentScope.Qt)(e, t, n);
@@ -4463,35 +6470,44 @@
       for (; Date.now() < i; ) {
         if (location.href !== r)
           return t.push(`已离开登录页，等待授权流程返回本站(${location.pathname})`), true;
-        if ((0, __contentScope.ar)(e)) return true;
+        if ((0, __contentScope.ar)(e)) return false;
+        const page = (0, __contentScope.readLoginSnapshot)(e);
+        if (page.sameOrigin && !page.loginForm && !page.loginEntry && !page.secondFactor && !page.challenge) {
+          await (0, __contentScope.readLoginState)(e, {
+            timeoutMs: Math.min(3e3, Math.max(1, i - Date.now())),
+            diagnostics: t
+          });
+          if (location.href !== r)
+            return t.push(`已离开登录页，等待授权流程返回本站(${location.pathname})`), true;
+          return false;
+        }
         await (0, __contentScope.w)(250);
       }
       return false;
     }
-    async function br(e, t, n = 6e3) {
-      let i = Date.now() + n;
-      for (; ; ) {
-        if ((0, __contentScope.ar)(e)) return t.push(`命中登录成功证据，已处于登录状态`), true;
-        if ((0, __contentScope.On)(e)) return t.push(`发现登录表单，需要重新登录`), false;
-        if ((0, __contentScope.nr)()) return t.push(`发现二次验证输入框，需要登录`), false;
-        if (Date.now() >= i) break;
-        await (0, __contentScope.w)(300);
-      }
-      return t.push(`未发现足够的登录成功证据`), false;
+    async function br(e, t, n = 6e3, options = {}) {
+      const state = await (0, __contentScope.readLoginState)(e, {
+        timeoutMs: n,
+        stopOnLoginForm: true,
+        diagnostics: t,
+        ...options
+      });
+      options.onResult?.(state);
+      t.push(loginStateLog(state));
+      if (state.status === `authenticated`) return t.push(`命中登录成功证据，已处于登录状态`), true;
+      if (state.reason === `login_form_visible`) t.push(`发现登录表单，需要重新登录`);
+      else if (state.reason === `second_factor_pending`) t.push(`发现二次验证输入框，需要登录`);
+      return false;
     }
-    async function xr(e, t) {
-      let n = Date.now() + 8e3;
-      for (; Date.now() < n; ) {
-        if ((0, __contentScope.ar)(e))
-          return t.push(
-            e.successIndicator ? `命中登录成功标志` : `登录页已离开，并找到可验证的登录后状态`
-          ), true;
-        if ((0, __contentScope.nr)()) break;
-        await (0, __contentScope.w)(300);
-      }
-      return t.push(
-        (0, __contentScope.nr)() ? `登录后进入二次验证步骤` : `登录后缺少明确成功证据，可能凭据错误或站点需要补充成功标志`
-      ), false;
+    async function xr(e, t, options = {}) {
+      const state = await (0, __contentScope.readLoginState)(e, {
+        timeoutMs: 8e3,
+        diagnostics: t,
+        ...options
+      });
+      options.onResult?.(state);
+      t.push(loginStateLog(state));
+      return state.status === `authenticated`;
     }
     function Tr() {
       let e = [...__contentScope.Sr];
@@ -4540,19 +6556,8 @@
     function jr(e) {
       return typeof e == `string` && e.trim() ? e.trim() : void 0;
     }
-    function Mr(e) {
-      let t = e.identitySource;
-      if (!t || typeof t != `object` || Array.isArray(t)) return null;
-      let n = t, r = {
-        storageKey: (0, __contentScope.jr)(n.storageKey),
-        storageType: (0, __contentScope.Ar)(n.storageType),
-        endpoint: (0, __contentScope.jr)(n.endpoint),
-        tokenKey: (0, __contentScope.jr)(n.tokenKey),
-        tokenStorageType: (0, __contentScope.Ar)(n.tokenStorageType),
-        tokenHeader: (0, __contentScope.jr)(n.tokenHeader),
-        tokenPrefix: typeof n.tokenPrefix == `string` ? n.tokenPrefix : void 0
-      };
-      return !r.storageKey && !r.endpoint ? null : r;
+    function Mr(site) {
+      return readIdentitySource(withSiteIdentityRecipe(site));
     }
     function Nr(e, t) {
       if (!t) return false;
@@ -4751,81 +6756,11 @@
       let r = new __contentScope.hi(e, n), i = r.readItem(0);
       return r.done() || (0, __contentScope.G)(`数据尾部有多余字节`), i;
     }
-    function xi(e) {
-      return e === `api` ? `站点接口` : e === `storage` ? `本地登录态` : e === `visible` ? `页面文本` : `未知来源`;
+    function xi(source) {
+      return identitySourceLabel(source);
     }
-    function Si(e) {
-      const record = (value) => !!value && typeof value === `object` && !Array.isArray(value);
-      const successful = (value) => {
-        if (value.success === false || value.ok === false || value.status === false) return false;
-        if (/^(?:error|failed|failure|unauthorized|forbidden)$/i.test(String(value.status ?? ``)))
-          return false;
-        if (value.code != null && !/^(?:0|200|success|ok)$/i.test(String(value.code).trim()))
-          return false;
-        return true;
-      };
-      const scalar = (value) => {
-        if (typeof value === `string` && value.trim()) return value.trim();
-        if (typeof value === `number` && Number.isFinite(value)) return String(value);
-      };
-      const identifier = (value) => {
-        if (typeof value === `number`)
-          return Number.isSafeInteger(value) && value >= 0 ? String(value) : void 0;
-        if (typeof value === `string` && /^[\w.:-]{1,128}$/.test(value.trim())) return value.trim();
-      };
-      const identityKeys = [
-        `user`,
-        `current_user`,
-        `currentUser`,
-        `user_info`,
-        `userInfo`,
-        `profile`,
-        `identity`
-      ];
-      const candidates = [];
-      const conflictingIds = /* @__PURE__ */ new Set();
-      const seen = /* @__PURE__ */ new Set();
-      function collect(value, depth = 0) {
-        if (!record(value) || depth > 3 || seen.has(value) || !successful(value)) return;
-        seen.add(value);
-        if (Object.prototype.hasOwnProperty.call(value, `data`)) {
-          collect(value.data, depth + 1);
-          for (const key of identityKeys) if (record(value[key])) collect(value[key], depth + 1);
-          return;
-        }
-        const nested = identityKeys.filter((key) => record(value[key]));
-        const directIds = new Set(
-          [value.id, value.user_id, value.userId, value.uid].map(identifier).filter(Boolean)
-        );
-        if (directIds.size > 1) for (const id of directIds) conflictingIds.add(id);
-        const direct = {
-          userId: directIds.size === 1 ? [...directIds][0] : void 0,
-          username: scalar(value.username) ?? scalar(value.user_name) ?? scalar(value.login),
-          email: scalar(value.email),
-          displayName: scalar(value.display_name) ?? scalar(value.displayName) ?? scalar(value.nickname)
-        };
-        if (direct.userId || direct.username || direct.email) {
-          direct.username ??= scalar(value.name);
-          if (!nested.length || direct.username || direct.email || direct.displayName)
-            candidates.push(direct);
-        }
-        for (const key of nested) collect(value[key], depth + 1);
-      }
-      collect(e);
-      const ids = /* @__PURE__ */ new Set([
-        ...conflictingIds,
-        ...candidates.map((value) => value.userId).filter(Boolean)
-      ]);
-      if (ids.size > 1)
-        return {
-          identityConflict: `身份接口同时返回不同用户 ID（${[...ids].join(`、`)}）`
-        };
-      const result = {};
-      for (const field of [`userId`, `username`, `email`, `displayName`]) {
-        const values = [...new Set(candidates.map((value) => value[field]).filter(Boolean))];
-        if (values.length === 1) result[field] = values[0];
-      }
-      return Object.keys(result).length ? result : null;
+    function Si(response, fields) {
+      return parseIdentityResponse(response, fields);
     }
     function Ci() {
       try {
@@ -4840,6 +6775,14 @@
     }
     function Ti(e, t) {
       let n = t ? [t] : [`localStorage`, `sessionStorage`];
+      if (!t && e === `auth-token` && location.origin === `https://orevx.ai`)
+        for (const areaName of n)
+          try {
+            const area = areaName === `localStorage` ? localStorage : sessionStorage, token = area.getItem(`auth-token`)?.trim(), sessionId = area.getItem(`auth-session-id`)?.trim(), storedUser = JSON.parse(area.getItem(`auth-user`) ?? `null`);
+            if (token && sessionId && Number.isSafeInteger(storedUser?.id) && storedUser.id > 0)
+              return token;
+          } catch {
+          }
       for (let t2 of n)
         try {
           let n2 = (t2 === `localStorage` ? typeof localStorage > `u` ? void 0 : localStorage : typeof sessionStorage > `u` ? void 0 : sessionStorage)?.getItem(e)?.trim();
@@ -4857,13 +6800,18 @@
         return null;
       }
     }
-    async function Di(e, t, n) {
-      if (!t.endpoint || !t.tokenKey || !(0, __contentScope.Nr)(e, t.endpoint)) return null;
+    async function Di(e, t, n, options = {}) {
+      if (!t.endpoint || !t.tokenKey || location.origin !== (0, __contentScope.Dr)(e) || !(0, __contentScope.Nr)(e, t.endpoint))
+        return null;
+      const url = new URL(t.endpoint), trace = (detail) => options.diagnostics?.push(`身份接口 ${url.origin}${url.pathname}（本站 Token）：${detail}`);
       let r = n ?? (0, __contentScope.Ti)(t.tokenKey, t.tokenStorageType);
-      if (!r) return null;
+      if (!r) return trace(`当前页面没有可用的会话 Token（存储键 ${t.tokenKey}）`), null;
       let i = { Accept: `application/cbor, application/json` };
       i[t.tokenHeader ?? `Authorization`] = `${t.tokenPrefix ?? `Bearer `}${r}`;
-      let a = new AbortController(), o = setTimeout(() => a.abort(), __contentScope.yi);
+      let a = new AbortController(), o = setTimeout(
+        () => a.abort(),
+        Math.min(__contentScope.yi, Math.max(1, options.timeoutMs ?? __contentScope.yi))
+      );
       try {
         let e2 = await fetch(t.endpoint, {
           method: `GET`,
@@ -4873,20 +6821,34 @@
           redirect: `error`,
           signal: a.signal
         });
-        if (!e2.ok || e2.redirected) return null;
+        if (!e2.ok) return trace(`HTTP ${e2.status}`), null;
+        if (e2.redirected || e2.url && new URL(e2.url).href !== url.href)
+          return trace(`响应发生跳转，未采用身份`), null;
         let n2 = e2.headers.get(`content-type`)?.toLowerCase() ?? ``;
-        return n2.includes(`cbor`) ? (0, __contentScope._i)(new Uint8Array(await e2.arrayBuffer())) : n2.includes(`json`) ? await e2.json().catch(() => null) : null;
-      } catch {
+        if (n2.includes(`cbor`) || n2.includes(`json`)) {
+          const body = n2.includes(`cbor`) ? (0, __contentScope._i)(new Uint8Array(await e2.arrayBuffer())) : await e2.json().catch(() => null);
+          if (body == null) trace(`JSON / CBOR 用户资料解析失败`);
+          return body;
+        }
+        trace(
+          n2.includes(`html`) ? `返回 HTML 页面，可能是访问验证或登录页` : `响应不是 JSON / CBOR 用户资料`
+        );
+        return null;
+      } catch (error) {
+        trace(error?.name === `AbortError` ? `请求超时` : `请求失败或被站点访问校验拦截`);
         return null;
       } finally {
         clearTimeout(o);
       }
     }
-    async function Oi(e, t, n) {
-      let r = await (0, __contentScope.Di)(e, t, n);
+    async function Oi(e, t, n, options = {}) {
+      let r = await (0, __contentScope.Di)(e, t, n, options);
       if (r == null) return null;
-      let i = (0, __contentScope.Si)(r);
-      return i ? { ...i, source: `api` } : null;
+      let i = (0, __contentScope.Si)(r, t.responseFields);
+      const url = new URL(t.endpoint), endpoint = `${url.origin}${url.pathname}`;
+      if (!i)
+        options.diagnostics?.push(`身份接口 ${endpoint}（本站 Token）：未返回有效的当前用户字段`);
+      return i ? { ...i, source: `api`, endpoint } : null;
     }
     function Fi(e, t = false) {
       if (!e) return ``;
@@ -4959,118 +6921,12 @@
       );
       return o && (t.email = o), t.userId || t.username || t.email ? t : null;
     }
-    function Bi() {
-      const textIdentity = (0, __contentScope.zi)((0, __contentScope.Li)());
-      if (typeof document.querySelectorAll !== `function`) return textIdentity;
-      const values = /* @__PURE__ */ new Map();
-      const profileWords = /个人资料|个人信息|我的(?:账户|账号|资料)|(?:^|[\s_-])(?:profile|personal|my[-_ ]account|account[-_ ](?:info|details)|user[-_ ]info)(?:$|[\s_-])/i;
-      const excludedWords = /中奖|获奖|邀请|推荐|排行榜|用户列表|成员列表|公告|(?:^|[\s_-])(?:winners?|leaderboard|rankings?|user[-_ ]list|member[-_ ]list|invitation|referral|announcement)(?:$|[\s_-])/i;
-      const profilePath = /\/(?:profile|personal|account|account-settings|my-account)(?:\/|$)/i.test(
-        `${typeof location === `undefined` ? `` : location.pathname}${typeof location === `undefined` ? `` : location.hash}`
+    function Bi(site) {
+      return readVisibleAccountIdentity(
+        document,
+        location,
+        site ? readIdentitySource(site) : void 0
       );
-      function fieldName(label) {
-        const name = String(label ?? ``).replace(/[:：#*＊]/g, ``).replace(/[\s_-]+/g, ``).toLowerCase();
-        if (/^(?:用户id|用户编号|账号id|账户id|userid|uid|accountid)$/.test(name)) return `userId`;
-        if (/^(?:用户名|登录名|账号名|账户名|账号|账户|当前(?:登录)?(?:账号|账户|用户)|我的(?:账号|账户)|username|loginname|account|currentuser|currentaccount|myaccount)$/.test(
-          name
-        ))
-          return `username`;
-        if (/^(?:邮箱|电子邮箱|电子邮件|我的邮箱|email|emailaddress)$/.test(name)) return `email`;
-        if (/^(?:昵称|显示名称|displayname|nickname)$/.test(name)) return `displayName`;
-        return null;
-      }
-      function metadata(node) {
-        return [
-          node.getAttribute?.(`aria-label`),
-          node.getAttribute?.(`title`),
-          node.getAttribute?.(`data-testid`),
-          node.id,
-          typeof node.className === `string` ? node.className : ``
-        ].filter(Boolean).join(` `);
-      }
-      function excluded(node) {
-        if (!(0, __contentScope.Ii)(node)) return true;
-        if (node.closest?.(
-          `table, [role="table"], [role="grid"], [role="list"], [role="listitem"], .lottery-sidebar`
-        ))
-          return true;
-        for (let current = node; current && !/^(?:BODY|HTML)$/.test(current.tagName); current = current.parentElement) {
-          if (excludedWords.test(metadata(current))) return true;
-          const heading = current.querySelector?.(
-            `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`
-          );
-          if (heading && excludedWords.test(heading.innerText ?? heading.textContent ?? ``))
-            return true;
-        }
-        const form = node.closest?.(`form`);
-        return !!form?.querySelector?.(`input[type="password"]`);
-      }
-      function profileArea(node, label) {
-        if (/^(?:当前|我的|current\s|my\s)/i.test(String(label ?? ``).trim())) return true;
-        if (profilePath) return true;
-        for (let current = node; current && !/^(?:BODY|HTML)$/.test(current.tagName); current = current.parentElement) {
-          if (profileWords.test(metadata(current))) return true;
-          const heading = current.querySelector?.(
-            `:scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > [role="heading"]`
-          );
-          if (heading && profileWords.test(heading.innerText ?? heading.textContent ?? ``)) return true;
-        }
-        return false;
-      }
-      function add(label, node, value) {
-        const field = fieldName(label);
-        if (!field || !node || excluded(node) || !profileArea(node, label)) return;
-        const normalized = String(value ?? ``).trim();
-        if (!normalized || normalized.length > 128 || /[\r\n]/.test(normalized)) return;
-        if (field === `userId` && !/^\d{1,16}$/.test(normalized)) return;
-        if (field === `username` && !/^[\p{L}\p{N}@][\p{L}\p{N}._+@'-]{1,79}$/u.test(normalized))
-          return;
-        if (field === `email` && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return;
-        const candidates = values.get(field) ?? /* @__PURE__ */ new Set();
-        candidates.add(normalized);
-        values.set(field, candidates);
-      }
-      function controlValue(control) {
-        const tag = control?.tagName?.toUpperCase();
-        if (tag === `OUTPUT`) return control.innerText ?? control.textContent;
-        if ((tag === `INPUT` || tag === `TEXTAREA`) && (control.readOnly || control.disabled || control.hasAttribute?.(`readonly`) || control.hasAttribute?.(`disabled`)) && !/^(?:password|hidden)$/i.test(control.type ?? ``))
-          return control.value;
-        return null;
-      }
-      for (const term of document.querySelectorAll(`dt`)) {
-        const description = term.nextElementSibling;
-        if (description?.tagName?.toUpperCase() !== `DD` || excluded(term)) continue;
-        add(
-          term.innerText ?? term.textContent,
-          description,
-          description.innerText ?? description.textContent
-        );
-      }
-      for (const label of document.querySelectorAll(`label`)) {
-        if (excluded(label)) continue;
-        const id = label.htmlFor || label.getAttribute?.(`for`);
-        const control = id ? document.getElementById?.(id) : label.querySelector?.(`input, textarea, output`);
-        add(label.innerText ?? label.textContent, control, controlValue(control));
-      }
-      for (const control of document.querySelectorAll(
-        `input[readonly], input[disabled], textarea[readonly], textarea[disabled], output`
-      )) {
-        const label = control.getAttribute?.(`aria-label`) || control.getAttribute?.(`name`) || control.id;
-        add(label, control, controlValue(control));
-      }
-      const ids = new Set(values.get(`userId`) ?? []);
-      if (textIdentity?.userId) ids.add(textIdentity.userId);
-      if (textIdentity?.identityConflict) return textIdentity;
-      if (ids.size > 1)
-        return {
-          source: `visible`,
-          identityConflict: `页面同时显示多个当前用户 ID（${[...ids].join(`、`)}）`
-        };
-      const identity = { ...textIdentity, source: `visible` };
-      for (const [field, candidates] of values)
-        if (candidates.size === 1) identity[field] = [...candidates][0];
-      if (values.size) identity.evidence = `structured-fields`;
-      return identity.userId || identity.username || identity.email ? identity : null;
     }
     function Vi(e, all = false) {
       let t = /(?<![A-Za-z])(?:用户\s*ID|User\s*ID|UID)\s*[:：#]?\s*(\d{1,12})\b/gi, n = /* @__PURE__ */ new Set();
@@ -5107,255 +6963,34 @@
       }
       return false;
     }
-    async function qi(e, t, n = {}) {
-      const family = (0, __contentScope.$r)(e).family, configured = (0, __contentScope.Mr)(e), stored = configured?.storageKey ? (0, __contentScope.Ei)(configured.storageKey, configured.storageType) : family === __contentScope.s.SUB2API ? (0, __contentScope.Ei)(`auth_user`) : null, hint = (0, __contentScope.Ci)() ?? stored?.userId, endpoints = e.tokenConfig?.identityEndpoint ? [e.tokenConfig.identityEndpoint] : family === __contentScope.s.SUB2API ? [`/api/v1/auth/me`, `/api/user/self`, `/api/user/info`] : configured?.endpoint || (0, __contentScope.rf)(e) ? __contentScope.vi : (0, __contentScope.wi)(e), deadline = Date.now() + (n.timeoutMs ?? __contentScope.yi), probeKey = JSON.stringify([
-        e.id,
-        location.origin,
-        t ? `explicit-token` : `browser-session`,
-        endpoints.map((endpoint) => {
-          try {
-            const url = new URL(endpoint, location.origin);
-            return `${url.origin}${url.pathname}`;
-          } catch {
-            return null;
-          }
-        }),
-        e.tokenConfig?.headerName,
-        !!configured?.endpoint,
-        !!e.authBootstrap?.endpoint
-      ]), probes = __contentScope.identityProbeHints, remembered = endpoints.some((endpoint) => {
-        try {
-          const url = new URL(endpoint, location.origin);
-          return !!url.search || !!url.hash;
-        } catch {
-          return true;
-        }
-      }) ? null : probes.get(probeKey), attempted = /* @__PURE__ */ new Set();
-      let partial = null;
-      async function read(headers, credentials, candidates = endpoints, mode = `cookie`) {
-        for (const endpoint of candidates) {
-          let url;
-          try {
-            url = new URL(endpoint, location.origin).href;
-          } catch {
-            continue;
-          }
-          const attempt = `${mode}|${url}`;
-          if (!(0, __contentScope.W)(e, url) || Date.now() >= deadline || attempted.has(attempt))
-            continue;
-          attempted.add(attempt);
-          const controller = new AbortController(), timer = setTimeout(
-            () => controller.abort(),
-            Math.min(1500, Math.max(1, deadline - Date.now()))
-          );
-          try {
-            const response = await fetch(url, {
-              method: `GET`,
-              credentials,
-              headers: { Accept: `application/json`, ...headers },
-              cache: `no-store`,
-              redirect: `error`,
-              signal: controller.signal
-            });
-            if (!response.ok || response.redirected || !(response.headers.get(`content-type`)?.toLowerCase() ?? ``).includes(`json`) || response.url && new URL(response.url).href !== url)
-              continue;
-            const identity = (0, __contentScope.Si)(await response.json().catch(() => null));
-            if (!identity) continue;
-            const evidence = { ...identity, source: `api`, endpoint: new URL(url).pathname };
-            if (identity.identityConflict) return evidence;
-            if (identity.userId) {
-              if (!new URL(url).search && !new URL(url).hash)
-                probes.set(probeKey, { endpoint, mode });
-              return evidence;
-            }
-            partial ??= evidence;
-          } catch {
-          } finally {
-            clearTimeout(timer);
-          }
-        }
-        return null;
-      }
-      function tokenHeaders(token2) {
-        if (!token2) return null;
-        const config = e.tokenConfig;
-        return {
-          [config?.headerName || `Authorization`]: `${config?.headerPrefix ?? `Bearer `}${token2}`
-        };
-      }
-      async function readCookie(candidates = endpoints) {
-        for (const endpoint of candidates) {
-          let identity = await read({}, `include`, [endpoint], `cookie`);
-          if (identity) return identity;
-          if (hint) {
-            identity = await read((0, __contentScope.Vr)(hint), `include`, [endpoint], `hint`);
-            if (identity) return identity;
-          }
-        }
-        return null;
-      }
-      let token = t ?? (e.tokenConfig ? (0, __contentScope.Ti)(e.tokenConfig.storageKey, e.tokenConfig.storageType) : null);
-      if (!token && family === __contentScope.s.SUB2API)
-        for (const key of [`auth_token`, `access_token`, `token`]) {
-          const value = (0, __contentScope.Ti)(key);
-          if (value && value.length > 20 && !value.startsWith(`{`)) {
-            token = value;
-            break;
-          }
-        }
-      const authorization = tokenHeaders(token);
-      if (remembered) {
-        let identity = null;
-        if (t && remembered.mode === `token` && authorization)
-          identity = await read(
-            { ...authorization, ...(0, __contentScope.Vr)(hint) },
-            `omit`,
-            [remembered.endpoint],
-            `token`
-          );
-        else if (!t) {
-          if (remembered.mode === `hint` && hint)
-            identity = await read(
-              (0, __contentScope.Vr)(hint),
-              `include`,
-              [remembered.endpoint],
-              `hint`
-            );
-          else identity = await readCookie([remembered.endpoint]);
-          if (!identity && remembered.mode === `token` && authorization)
-            identity = await read(
-              { ...authorization, ...(0, __contentScope.Vr)(hint) },
-              `omit`,
-              [remembered.endpoint],
-              `token`
-            );
-          if (!identity && remembered.mode === `bootstrap` && e.authBootstrap) {
-            const headers = await (0, __contentScope.ui)(e);
-            if (Object.keys(headers).length)
-              identity = await read(
-                { ...headers, ...(0, __contentScope.Vr)(hint) },
-                `omit`,
-                [remembered.endpoint],
-                `bootstrap`
-              );
-          }
-        }
-        if (identity) return identity;
-        probes.delete(probeKey);
-      }
-      if (!t) {
-        const identity = await readCookie();
-        if (identity) return identity;
-      }
-      if (authorization) {
-        const identity = await read(
-          { ...authorization, ...(0, __contentScope.Vr)(hint) },
-          `omit`,
-          endpoints,
-          `token`
-        );
-        if (identity) return identity;
-      }
-      if (configured?.endpoint && Date.now() < deadline) {
-        const identity = await (0, __contentScope.Oi)(e, configured, t);
-        if (identity?.userId || identity?.identityConflict) return identity;
-        partial ??= identity;
-      }
-      if (!t && e.authBootstrap && Date.now() < deadline) {
-        const headers = await (0, __contentScope.ui)(e);
-        if (Object.keys(headers).length) {
-          const identity = await read(
-            { ...headers, ...(0, __contentScope.Vr)(hint) },
-            `omit`,
-            endpoints,
-            `bootstrap`
-          );
-          if (identity) return identity;
-        }
-      }
-      if (n.serverOnly === true || t) return partial;
-      const visible = (0, __contentScope.Bi)();
-      if (!partial) return visible;
-      if (visible?.identityConflict) return visible;
-      if (visible?.userId) {
-        if (partial.username && visible.username && !(0, __contentScope.Ji)(partial.username, visible.username))
-          return {
-            source: `visible`,
-            identityConflict: `身份接口的账号名与页面用户 ID ${visible.userId} 所属账号不一致`
-          };
-        return { ...visible, ...partial.username ? { username: partial.username } : {} };
-      }
-      return partial;
-    }
-    function Ji(e, t) {
-      return !e || !t ? false : e.trim().toLowerCase() === t.trim().toLowerCase();
-    }
-    function Yi(e, t) {
-      let n = [e.username, e.email, e.displayName].filter(Boolean), r = n.find((e2) => (0, __contentScope.Ji)(e2, t));
-      if (r) return r;
-      let i = t.includes(`@`) ? t.split(`@`)[0] : null;
-      return i ? n.find((e2) => !e2.includes(`@`) && (0, __contentScope.Ji)(e2, i)) ?? null : null;
-    }
-    function Xi(e, t, n = [], r) {
-      let i = (0, __contentScope.Yi)(e, t);
-      if (i) return { value: i, expected: t, source: `primary` };
-      if (r?.username && (0, __contentScope.Ji)(e.username, r.username))
-        return { value: e.username, expected: r.username, source: `stored` };
-      if (r?.email && (0, __contentScope.Ji)(e.email, r.email))
-        return { value: e.email, expected: r.email, source: `stored` };
-      let a = /* @__PURE__ */ new Set([t.trim().toLowerCase()]), o = n.map((e2) => e2.trim()).filter((e2) => {
-        if (!e2) return false;
-        let t2 = e2.toLowerCase();
-        return !a.has(t2) && (a.add(t2), true);
+    async function qi(site, token, options = {}) {
+      identityResolver ??= new SiteIdentityResolver({
+        getFamily: (selected) => (0, __contentScope.$r)(selected).family,
+        readStorage: (key, type) => (0, __contentScope.Ti)(key, type),
+        readPage: (selected) => (0, __contentScope.Bi)(selected),
+        userIdHeaders: (hint) => (0, __contentScope.Vr)(hint),
+        bootstrapHeaders: (selected) => (0, __contentScope.ui)(selected),
+        readExternal: (selected, source, explicitToken, readOptions) => (0, __contentScope.Oi)(selected, source, explicitToken, readOptions),
+        transportHints: __contentScope.identityProbeHints
       });
-      for (let t2 of o) {
-        let n2 = t2.includes(`@`) ? (0, __contentScope.Ji)(e.email, t2) ? e.email : void 0 : (0, __contentScope.Ji)(e.username, t2) ? e.username : void 0;
-        if (n2) return { value: n2, expected: t2, source: `alias` };
-      }
-      return null;
+      const deadline = Date.now() + (options.timeoutMs ?? 4e3), reader = Object.create(identityResolver);
+      reader.readExternal = (selected, source, explicitToken) => (0, __contentScope.Oi)(selected, source, explicitToken, {
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        diagnostics: options.diagnostics
+      });
+      return reader.read(withSiteIdentityRecipe(site), token, options);
     }
-    function Zi(e, t, n, r) {
-      if (e?.identityConflict)
-        return { match: `unknown`, detail: `身份证据冲突：${e.identityConflict}` };
-      let i = r?.pageAccountMatch, a = i && (!e || e.source === `visible`) && (0, __contentScope.Ji)(i, t) ? i : null;
-      if (!e)
-        return n ? {
-          match: `unknown`,
-          detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID`
-        } : a ? {
-          match: `confirmed`,
-          detail: `页面显示账号 ${a} 一致（读自页面文本）`
-        } : { match: `unknown`, detail: `读不到当前登录身份` };
-      let o = `读自${(0, __contentScope.xi)(e.source)}`, s = (0, __contentScope.Xi)(e, t, r?.expectedAliases, r?.expectedIdentity), c = e.userId ? r?.knownUsers?.[e.userId] : void 0;
-      if (e.userId && c)
-        return {
-          match: `mismatch`,
-          detail: n ? `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），本次要签到的是 ${n}` : `当前登录的是用户 ID ${e.userId}（本站账号 ${c}，${o}），不是本次账号 ${t}`
-        };
-      if (n) {
-        if (!e.userId)
-          return {
-            match: `unknown`,
-            detail: `本账号已绑定用户 ID ${n}，当前页面尚未返回用户 ID（${o}）`
-          };
-        return String(e.userId) === String(n) ? {
-          match: `confirmed`,
-          detail: `用户 ID ${e.userId} 一致（${o}，账号备注不参与身份核验）`
-        } : {
-          match: `mismatch`,
-          detail: `当前登录的是用户 ID ${e.userId}（${o}），本次要签到的是 ${n}`
-        };
-      }
-      let l = [e.username, e.email, e.displayName].filter(Boolean);
-      if (l.length === 0) return { match: `unknown`, detail: `站点未返回可比对的用户名（${o}）` };
-      let u = s?.value ?? a;
-      return u ? {
-        match: `confirmed`,
-        detail: s?.source === `stored` ? `账号 ${t} 已保存的站点身份 ${s.expected} 与当前身份一致（${o}）` : s?.source === `alias` ? `账号 ${t} 保存的身份别名 ${s.expected} 与当前身份 ${u} 一致（${o}）` : (0, __contentScope.Ji)(u, t) ? `账号 ${t} 一致（${o}）` : `账号 ${t} 与站点用户名 ${u} 一致（${o}）`
-      } : {
-        match: `mismatch`,
-        detail: `当前登录的是 ${l[0]}（${o}），本次要签到的是 ${t}`
-      };
+    function Ji(first, second) {
+      return identitiesEqual(first, second);
+    }
+    function Yi(identity, username) {
+      return findIdentityMatch(identity, username)?.value ?? null;
+    }
+    function Xi(identity, username, aliases, expectedIdentity) {
+      return findIdentityMatch(identity, username, aliases, expectedIdentity);
+    }
+    function Zi(identity, username, userId, options) {
+      return compareAccountIdentity(identity, username, userId, options);
     }
     function Qi(e, t) {
       let n = [/token/i, /auth/i, /session/i, /user/i, /login/i], r = e.checkin?.logoutStorageKeys ?? [], i = 0;
@@ -7979,7 +9614,7 @@
       return e.verdict === `confirmed` ? { action: `proceed`, reason: `confirmed` } : e.verdict === `mismatch` ? !t || e.canSwitchAccount ? { action: `switch-account`, reason: `mismatch` } : { action: `handoff`, reason: `mismatch-external` } : e.checkinPageAvailable ? {
         action: `defer-to-checkin-page`,
         reason: `identity-visible-on-checkin-page`
-      } : e.loginMethod === `manual` ? { action: `handoff`, reason: `unknown-manual-identity` } : e.canSwitchAccount ? { action: `switch-account`, reason: `unknown` } : e.siteAccountCount === 1 && !e.expectedUserId ? { action: `proceed`, reason: `single-account` } : t ? { action: `handoff`, reason: `unknown-multi-account` } : { action: `switch-account`, reason: `unknown` };
+      } : e.loginMethod === `manual` ? { action: `handoff`, reason: `unknown-manual-identity` } : e.canSwitchAccount ? { action: `switch-account`, reason: `unknown` } : t ? { action: `handoff`, reason: `unknown-multi-account` } : { action: `switch-account`, reason: `unknown` };
     }
     function nm(e) {
       return typeof e != `number` || !Number.isFinite(e) ? false : e - Date.now() <= __contentScope.em;
@@ -8077,14 +9712,46 @@
         ) && (t += 1);
       }), t;
     }
-    function hasVisibleLogoutControl() {
-      return [...document.querySelectorAll(`button, a, [role="button"]`)].some((control) => {
-        if (!(0, __contentScope.O)(control)) return false;
-        const label = (control.innerText || control.textContent || control.getAttribute(`aria-label`) || ``).replace(/\s+/g, ` `).trim();
-        return /^(?:退出\s*(?:登录|账号|账户)|注销\s*登录|登出|log[\s-]?out|sign[\s-]?out)$/i.test(
-          label
+    function hasVisibleLogoutControl(site, siteEvidence) {
+      const visible = (control) => {
+        if (!(0, __contentScope.O)(control) || control.disabled || control.hasAttribute?.(`disabled`) || control.getAttribute?.(`aria-disabled`) === `true` || control.hasAttribute?.(`data-disabled`) && control.getAttribute?.(`data-disabled`) !== `false`)
+          return false;
+        for (let parent = control; parent; parent = parent.parentElement)
+          if (parent.hidden || parent.getAttribute?.(`aria-hidden`) === `true` || parent.hasAttribute?.(`inert`))
+            return false;
+        return true;
+      }, controls = [
+        ...document.querySelectorAll(`button, a, [role="button"]`),
+        ...document.querySelectorAll(
+          `[role="menuitem"], [role="treeitem"], [data-slot="sidebar-menu-item"]`
+        )
+      ];
+      for (const control of new Set(controls)) {
+        if (!visible(control)) continue;
+        const referenced = [`aria-labelledby`, `aria-describedby`].flatMap(
+          (attribute) => (control.getAttribute?.(attribute) ?? ``).split(/\s+/).filter(Boolean).map((id) => document.getElementById?.(id)?.textContent)
+        ), labels = [
+          control.innerText,
+          control.textContent,
+          control.getAttribute?.(`aria-label`),
+          control.getAttribute?.(`title`),
+          control.getAttribute?.(`data-tooltip`),
+          control.getAttribute?.(`data-tip`),
+          ...referenced
+        ];
+        const normalizedLabels = labels.filter((label) => typeof label === `string`).map((label) => label.replace(/\s+/g, ` `).trim()), menu = control.closest?.(`[role="menu"], [role="tree"], [role="treegrid"]`), accountMenu = menu && [...menu.querySelectorAll(`a[href], [role="menuitem"], [role="treeitem"]`)].some(
+          (item) => /个人(?:资料|设置|中心)|(?:账号|账户)(?:资料|设置)|(?:my\s+)?profile|account\s+(?:settings|profile)|personal\s+(?:settings|information)/i.test(
+            (0, __contentScope.Rn)(item)
+          )
         );
-      });
+        if (normalizedLabels.some(
+          (label) => /^(?:退出\s*(?:当前\s*)?(?:登录|账号|账户)|注销\s*登录|登出|log[\s-]?out|sign[\s-]?out)[.!。！]?$/i.test(
+            label
+          )
+        ) || accountMenu && normalizedLabels.some((label) => /^(?:退出|注销|exit)[.!。！]?$/i.test(label)))
+          return true;
+      }
+      return (siteEvidence ?? readSiteLoginEvidence(site ?? { loginUrl: location.origin }, document, location, visible)).logoutControl === true;
     }
     function detectPageLogin(site, account = {}, enumerate = false) {
       function registrationStep(input) {
@@ -8100,7 +9767,7 @@
       ) : null, form = !!password && !!username && (0, __contentScope.kn)() && !registrationStep(password.element), discovered = (0, __contentScope.collectLoginEntries)(), manual = discovered.find((entry2) => entry2.method === `manual`), entry = [
         ...document.querySelectorAll(`button, [role="button"], a[href], input[type="button"]`)
       ].find(
-        (control) => (0, __contentScope.O)(control) && !registrationStep(control) && /密码登录|账号密码|账密登录|(?:sign|log)\s*in\s*(?:with|using)?\s*(?:email|password)|(?:use|continue\s*with)\s*password|^password(?:\s*login)?$/i.test(
+        (control) => (0, __contentScope.O)(control) && !isLoginHelpControl(control) && !registrationStep(control) && /密码登录|账号密码|账密登录|(?:sign|log)\s*in\s*(?:with|using)?\s*(?:email|password)|(?:use|continue\s*with)\s*password|^password(?:\s*login)?$/i.test(
           control.innerText || control.textContent || control.getAttribute(`aria-label`) || control.value || ``
         ) && !/忘记|重置|找回|修改|forgot|reset|recover|change|sign\s*up|register/i.test(
           control.innerText || control.textContent || control.getAttribute(`aria-label`) || control.value || ``
@@ -8166,8 +9833,8 @@
             entries: options.map(({ evidence, ...entry }) => entry),
             evidence: options.map((option) => option.evidence)
           };
-        const indicator = site.successIndicator ? (0, __contentScope.D)(site.successIndicator) : null;
-        if (indicator && (0, __contentScope.O)(indicator) || (0, __contentScope.hasVisibleLogoutControl)())
+        const loginState = classifyLoginState((0, __contentScope.readLoginSnapshot)(site));
+        if (loginState.status === `authenticated`)
           return {
             ...result,
             status: `already-logged-in`,
@@ -8176,7 +9843,7 @@
         return {
           ...result,
           evidence: [
-            (0, __contentScope.nr)() ? `当前页面正在等待二次验证，暂时不能确认可用登录方式` : `当前页面尚未展示可识别的登录入口；可重新检测或手动选择账号类型`
+            loginState.status === `blocked` || loginState.status === `failed` ? loginState.detail : `当前页面尚未展示可识别的登录入口；可重新检测或手动选择账号类型`
           ]
         };
       } catch {
@@ -8191,7 +9858,10 @@
       e = { ...e, site: { ...e.site, selectors: { ...e.site.selectors } } };
       if (e.loginEntry?.method === e.effectiveLoginMethod)
         e.site = { ...e.site, loginEntry: e.loginEntry, oauthButtonSelector: `` };
-      let n = [...e.steps ?? []], r = e.effectiveLoginMethod ?? (e.formCredentialsSubmitted ? `form` : e.githubCredentialsSubmitted ? `github` : `auto`), i = r === `oauth` || r === `github` || r === `passkey`, a = r === `github` ? e.githubUsername?.trim() : void 0, o = r === `github` && !!e.githubUsername && !!e.githubPassword && !!t.startGithubLogout, s = { knownUsers: e.siteAccountUserIds ?? {} }, c = e.siteAccountCount === 1 && !(0, __contentScope.p)(e.site) ? e.site.adapter?.userId : void 0, l = e.accountIdentityUserId ?? c, u = l ? s.knownUsers[l] : void 0, d = u ? void 0 : l, f2 = d, formLoginSubmitted = e.formCredentialsSubmitted === true, loginPageDetected = false, manualWaitingStage = [`verify-manual`, `relogin-verify-manual`].includes(e.stage) ? e.stage : null, m = e.accountIdentityUsername, h = e.accountIdentityEmail, g = () => f2 ?? d, _ = e.workflowRouteIndex, v = () => !e.site.adapter && !f2 || e.site.adapter?.userId === f2 ? e.site : { ...e.site, adapter: { ...e.site.adapter, userId: f2 } }, y = () => {
+      let n = [...e.steps ?? []], r = e.effectiveLoginMethod ?? (e.formCredentialsSubmitted ? `form` : e.githubCredentialsSubmitted ? `github` : `auto`), i = r === `oauth` || r === `github` || r === `passkey`, a = r === `github` ? e.githubUsername?.trim() : void 0, o = r === `github` && !!e.githubUsername && !!e.githubPassword && !!t.startGithubLogout, s = {
+        knownUsers: e.siteAccountUserIds ?? {},
+        knownIdentities: e.siteAccountIdentities ?? []
+      }, l = e.accountIdentityUserId, u = l ? s.knownUsers[l] : void 0, d = u ? void 0 : l, f2 = d, formLoginSubmitted = e.formCredentialsSubmitted === true, manualWaitingStage = [`verify-manual`, `relogin-verify-manual`].includes(e.stage) ? e.stage : null, m = e.accountIdentityUsername, h = e.accountIdentityEmail, g = () => f2 ?? d, _ = e.workflowRouteIndex, v = () => !e.site.adapter && !f2 || e.site.adapter?.userId === f2 ? e.site : { ...e.site, adapter: { ...e.site.adapter, userId: f2 } }, y = () => {
         let t2 = v(), n2 = e.effectiveCheckinMethod ? {
           ...t2,
           checkin: { ...t2.checkin, method: e.effectiveCheckinMethod }
@@ -8233,6 +9903,10 @@
         return n2;
       }, x = /* @__PURE__ */ new Set([`未发现公告弹窗`]), S = {
         push: (e2) => {
+          if (e2.startsWith(`身份接口 `)) {
+            if (x.has(e2)) return;
+            x.add(e2);
+          }
           x.has(e2) && n[n.length - 1] === e2 || (n.push(e2), console.log(`[签到助手]`, e2), t.reportProgress?.([...n]));
         }
       };
@@ -8253,7 +9927,6 @@
             i = r === `oauth` || r === `github` || r === `passkey`;
             a = r === `github` ? e.githubUsername?.trim() : void 0;
             o = r === `github` && !!e.githubUsername && !!e.githubPassword && !!t.startGithubLogout;
-            loginPageDetected = true;
             formLoginSubmitted = false;
             S.push(`根据当前页面识别登录方式：${method}（${choice.evidence}）`);
             if (method === `form` && choice.entry) {
@@ -8326,9 +9999,19 @@
             }
         }
       };
-      async function ie(identity) {
-        const persist = identity.source === `api` && (r !== `manual` || !!g() || matchesManualAccount(identity)) && !(r === `form` && !formLoginSubmitted && !e.accountIdentityUserId) || r === `form` && formLoginSubmitted && identity.verifiedByManagedLogin === true;
-        if (persist) await t.saveIdentity?.(identity);
+      async function ie(identity, stable = false) {
+        const persist = identity.source === `api` && (r !== `manual` || hasBoundIdentity() || matchesManualAccount(identity)) && !(r === `form` && !formLoginSubmitted && !hasBoundIdentity()) || identity.verifiedByManagedLogin === true && (r === `form` && formLoginSubmitted || r === `github` && e.githubCredentialsSubmitted === true);
+        if (!persist) return false;
+        if (!hasBoundIdentity() && !stable) {
+          await (0, __contentScope.w)(350);
+          const next = await se(`首次身份绑定复核`);
+          if (!stableIdentitySamples(identity, next.identity) || ue(next) || identity.verifiedByManagedLogin !== true && ce(next).match !== `confirmed`)
+            throw Error(`首次绑定的身份尚未形成与本账号一致的稳定样本，已保留原账号数据`);
+          identity = { ...identity, ...next.identity };
+        }
+        if (!hasBoundIdentity() && !t.saveIdentity)
+          throw Error(`无法保存本账号首次确认的身份，请重新加载扩展后重试`);
+        await t.saveIdentity?.(identity);
         if (identity.userId) f2 = identity.userId;
         if (identity.username) m = identity.username;
         if (identity.email) h = identity.email;
@@ -8339,12 +10022,14 @@
       }
       async function ae(loginDescription, tokenIdentity) {
         let observation = tokenIdentity ? { identity: tokenIdentity } : await se(`第二次登录后的页面`), verdict = ce(observation);
+        if (!tokenIdentity && await enterIdentityPage(observation, verdict, `relogin-verify`))
+          return null;
         if (!tokenIdentity) {
           const first = observation.identity;
           await (0, __contentScope.w)(350);
           observation = await se(`第二次登录后的页面`);
           verdict = ce(observation);
-          if (!first || first.identityConflict || first.source !== observation.identity?.source || first.userId !== observation.identity?.userId || !first.userId && (first.username !== observation.identity?.username || first.email !== observation.identity?.email))
+          if (!stableIdentitySamples(first, observation.identity))
             verdict = {
               match: `unknown`,
               detail: observation.identity?.identityConflict ? `身份证据冲突：${observation.identity.identityConflict}` : `第二次登录后的身份尚未形成一致的稳定样本`
@@ -8376,12 +10061,12 @@
       }
       function oe(t2) {
         let n2 = (0, __contentScope.Gi)(e.username);
-        return n2 ? (S.push(
+        return n2 && !n2.masked ? (S.push(
           `${t2}读不到身份接口，但页面上印着本账号 ${n2.matched}${n2.masked ? `（打码显示）` : ``}，按用户名核对`
         ), { username: e.username, source: `visible` }) : null;
       }
       async function se(t2) {
-        let n2 = await (0, __contentScope.qi)(v()), r2 = (0, __contentScope.Gi)(e.username);
+        let n2 = await (0, __contentScope.qi)(v(), void 0, { diagnostics: S }), r2 = (0, __contentScope.Gi)(e.username);
         return n2 ? r2 && n2.source === `visible` ? (S.push(`${t2}同时显示站点账号 ${r2.matched}，作为当前账号的页面旁证`), { identity: n2, pageAccountMatch: r2.matched }) : { identity: n2 } : { identity: oe(t2) };
       }
       function ce(t2) {
@@ -8393,14 +10078,51 @@
           ...n2 ? { expectedIdentity: n2 } : {}
         });
       }
+      function hasBoundIdentity() {
+        return !!g() || !!m || !!h;
+      }
+      function canProbeLoginIdentityPage() {
+        return ![`oauth`, `github`, `passkey`].includes(r) || (0, __contentScope.rr)(e.site);
+      }
+      async function enterIdentityPage(observation, verdict, stage = `checkin`, navigationOptions = {}) {
+        const loginVerification = navigationOptions.loginVerification === true, workflow = (0, __contentScope.rf)(y());
+        if (r === `token` || r === `manual` || workflow && !loginVerification || observation.identity?.identityConflict || observation.identity?.userId || verdict.match !== `unknown`)
+          return false;
+        const identityPath = loginVerification && workflow ? (0, __contentScope.sf)(y()) : null, identitySite = identityPath ? {
+          ...y(),
+          identitySource: { ...readIdentitySource(y()), pagePath: identityPath }
+        } : y(), url = resolveIdentityPage(identitySite, document, location);
+        if (!url) return false;
+        const target = new URL(url);
+        const path = `${target.pathname}${target.hash}`;
+        if (path === `${location.pathname}${location.hash}`) return false;
+        const phase = stage.startsWith(`relogin`) ? `第二次登录` : `本轮登录`;
+        const message = `身份读取进入资料页: ${path}（${phase}）`;
+        let loginStart = 0;
+        for (let index = 0; index < n.length; index++)
+          if (n[index].startsWith(__contentScope.Wm) || n[index].startsWith(`开始第二次登录以完成签到`))
+            loginStart = index;
+        if (n.slice(loginStart).includes(message)) {
+          S.push(
+            `身份核验页未能到达：已尝试 ${path}，站点仍返回 ${location.pathname}${location.hash}；停止重复跳转`
+          );
+          return false;
+        }
+        S.push(
+          `当前页身份字段不足：${verdict.detail}；使用本站资料页读取当前账号，目标用户 ID ${g() ?? `尚未绑定`}`
+        );
+        S.push(message);
+        await t.navigate(url, n, stage);
+        return true;
+      }
       function le(e2, t2) {
-        if (e2.identity?.source !== `api`) return false;
+        if (![`api`, `visible`].includes(e2.identity?.source)) return false;
         let n2 = e2.identity.userId;
-        return n2 && g() ? n2 !== g() : n2 && s.knownUsers[n2] ? true : t2.match === `mismatch` && !i;
+        return n2 && g() ? n2 !== g() : n2 && s.knownUsers[n2] ? true : t2.match === `mismatch` && (!i || !g() && hasBoundIdentity() && (e2.identity.source === `api` || [`structured-fields`, `profile-card`].includes(e2.identity.evidence)));
       }
       function ue(e2) {
         let t2 = e2.identity?.userId;
-        return t2 ? e2.identity?.source === `api` && g() && t2 !== g() ? true : !!s.knownUsers[t2] : false;
+        return t2 ? [`api`, `visible`].includes(e2.identity?.source) && g() && t2 !== g() ? true : !!s.knownUsers[t2] : false;
       }
       function matchesManualAccount(identity) {
         const target = String(e.username ?? ``).trim().toLowerCase();
@@ -8412,18 +10134,20 @@
         const first = await se(`页面登录身份`), verdict = de(first, ce(first));
         if (first.identity?.identityConflict || ue(first) || verdict.match === `mismatch`)
           return { confirmed: false, conflict: true, detail: verdict.detail };
-        if (first.identity?.source !== `api` || !first.identity.userId || (g() ? verdict.match !== `confirmed` : !matchesManualAccount(first.identity)))
+        if (first.identity?.source !== `api` || !first.identity.userId && !first.identity.username && !first.identity.email || (hasBoundIdentity() ? verdict.match !== `confirmed` : !matchesManualAccount(first.identity)))
           return { confirmed: false, detail: `尚未读到与账号 ${e.username} 一致的实时身份` };
         await (0, __contentScope.w)(350);
         const next = await se(`页面登录身份复核`), nextVerdict = de(next, ce(next));
         if (next.identity?.identityConflict || ue(next) || nextVerdict.match === `mismatch`)
           return { confirmed: false, conflict: true, detail: nextVerdict.detail };
-        if (next.identity?.source !== `api` || next.identity.userId !== first.identity.userId || (g() ? nextVerdict.match !== `confirmed` : !matchesManualAccount(next.identity)))
+        if (next.identity?.source !== `api` || !stableIdentitySamples(first.identity, next.identity) || (hasBoundIdentity() ? nextVerdict.match !== `confirmed` : !matchesManualAccount(next.identity)))
           return { confirmed: false, detail: `页面登录身份尚未形成连续稳定样本` };
         if (!t.saveIdentity) throw Error(`当前运行环境无法保存页面登录身份，请重新加载扩展`);
-        await ie(next.identity);
+        await ie(next.identity, true);
         await t.confirmIdentity?.();
-        S.push(`已连续核对页面登录身份，本站用户 ID ${g()} 与账号 ${e.username} 一致`);
+        S.push(
+          `已连续核对页面登录身份，本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`} 与账号 ${e.username} 一致`
+        );
         return { confirmed: true };
       }
       async function waitManualLogin(stage, announce = true) {
@@ -8491,11 +10215,11 @@
         return r2 ? e.username.includes(`@`) && r2.email ? true : !i : false;
       }
       function pe(t2) {
-        return r === `github` && o && e.githubCredentialsSubmitted === true && !!t2.identity?.userId && !ue(t2);
+        return r === `github` && o && e.githubCredentialsSubmitted === true && (t2.identity?.userId || (t2.identity?.username || t2.identity?.email) && (t2.identity.source === `api` || [`structured-fields`, `profile-card`].includes(t2.identity.evidence))) && !ue(t2) && (!hasBoundIdentity() || ce(t2).match === `confirmed`);
       }
       function canEstablishFormIdentity(observation) {
         const identity = observation.identity;
-        return r === `form` && formLoginSubmitted && !g() && !!identity?.userId && (identity.source === `api` || identity.source === `visible`) && !ue(observation);
+        return r === `form` && formLoginSubmitted && !hasBoundIdentity() && !identity?.identityConflict && (identity?.userId || (identity?.source === `api` || [`structured-fields`, `profile-card`].includes(identity?.evidence)) && matchesManualAccount(identity)) && (identity.source === `api` || identity.source === `visible`) && !ue(observation);
       }
       async function beforeFormSubmit(stage) {
         if (!await D(stage)) return false;
@@ -8509,12 +10233,19 @@
       }
       async function me(t2, n2) {
         if (pe(t2)) {
+          if (!hasBoundIdentity()) {
+            const first = t2.identity;
+            await (0, __contentScope.w)(350);
+            const next = await se(`${n2}首次身份复核`);
+            if (!pe(next) || !stableIdentitySamples(first, next.identity)) return `unresolved`;
+            t2 = next;
+          }
           let r2 = t2.identity;
-          return await ie({ ...r2, verifiedByManagedLogin: true }), S.push(
-            `本轮已用账号 ${e.username} 保存的 GitHub 凭据登录，${n2}显示的 ${r2.username ?? r2.displayName ?? r2.email ?? `第三方身份`}（用户 ID ${r2.userId}）就是本账号；` + (r2.source === `api` ? `已记住该用户 ID，以后直接按 ID 核对` : `本轮按该身份继续核对，不保存为长期账号映射`)
+          return await ie({ ...r2, verifiedByManagedLogin: true }, true), S.push(
+            `本轮已用账号 ${e.username} 保存的 GitHub 凭据登录，${n2}显示的 ${r2.username ?? r2.email ?? r2.userId} 已连续核对；已保存本站${r2.userId ? `用户 ID ${r2.userId}` : `登录标识 ${r2.username ?? r2.email}`}，以后直接核对本账号绑定`
           ), `confirmed`;
         }
-        return r === `github` && o && (S.push(
+        return r === `github` && o && e.githubCredentialsSubmitted !== true && (S.push(
           `${n2}只显示第三方身份，且本轮沿用的是浏览器里已有的 GitHub 会话，改为用本账号保存的 GitHub 凭据重新登录`
         ), await A() === `started`) ? `switching` : `unresolved`;
       }
@@ -8571,7 +10302,37 @@
       function E(e2, t2 = 12e4) {
         return be(e2, t2, false);
       }
-      let checkinResultBeforeClick;
+      const loginVerificationNavigation = {};
+      let checkinResultBeforeClick, lastLoginState;
+      async function readCurrentLoginState(timeoutMs = 6e3) {
+        const state = await (0, __contentScope.readLoginState)(v(), {
+          timeoutMs,
+          stopOnLoginForm: true,
+          diagnostics: S
+        });
+        lastLoginState = state;
+        S.push(loginStateLog(state));
+        return state;
+      }
+      function canStartLogin(state) {
+        return state.status === `pending` && [`login_form_visible`, `login_entry_visible`].includes(state.reason);
+      }
+      function shouldProbeLoginIdentity(state) {
+        return state.status === `pending` && ![`login_form_visible`, `login_entry_visible`, `oauth_pending`].includes(state.reason);
+      }
+      async function stopForUnconfirmedLogin(state) {
+        if (state.identity?.identityConflict) {
+          const observation = { identity: state.identity };
+          await je(observation, ce(observation));
+          return null;
+        }
+        if (state.status === `failed`) return C(`登录状态核验未通过：${state.detail}`);
+        await t.needsUser(
+          state.status === `blocked` ? `登录步骤尚未完成：${state.detail}。请在本站完成这一项后重新执行。` : `当前登录状态尚未确认：${state.detail}。没有看到可操作的登录表单或登录入口，已保留当前会话；请查看账号详情里的身份读取来源，或在本站资料页补充可核对的身份字段后重试。`,
+          n
+        );
+        return null;
+      }
       async function D(e2) {
         if (e2 === `checkin`) {
           const result = (0, __contentScope.Uu)();
@@ -8580,11 +10341,7 @@
         return be(e2, __contentScope.$);
       }
       function loginResultReady() {
-        const site = v();
-        if ((0, __contentScope.On)(site) || (0, __contentScope.nr)()) return false;
-        const indicator = site.successIndicator ? (0, __contentScope.D)(site.successIndicator) : null;
-        if (indicator && (0, __contentScope.O)(indicator)) return true;
-        return (0, __contentScope.hasVisibleLogoutControl)();
+        return classifyLoginState((0, __contentScope.readLoginSnapshot)(v())).status === `authenticated`;
       }
       function xe(e2) {
         return be(e2, __contentScope.$, true, 2500, loginResultReady);
@@ -8603,17 +10360,42 @@
           i2.error ? `签到验证未完成：${i2.error}` : `${i2.kind ?? `安全验证`}未在等待时间内完成`
         ), i2);
       }
-      async function we(r2, i2) {
-        let a2 = await ye(r2);
-        if (i2?.(a2), !a2.resolved) return false;
-        let o2 = async () => location.origin === (0, __contentScope.Dr)(e.site) && (r2 === `verify` || r2 === `verify-oauth` || r2 === `relogin-verify`) && (await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), (!(0, __contentScope.rf)(y()) || (0, __contentScope.cf)(y())) && (await (0, __contentScope.qi)(v()))?.source === `api`) ? (S.push(`站点身份接口确认登录成功`), true) : (0, __contentScope.xr)(e.site, S);
+      async function we(stage, onChallenge) {
+        let a2 = await ye(stage);
+        if (onChallenge?.(a2), !a2.resolved) {
+          lastLoginState = {
+            status: `blocked`,
+            reason: `challenge_pending`,
+            detail: `${a2.kind ?? `安全验证`}尚未完成，暂不确认登录成功`
+          };
+          S.push(loginStateLog(lastLoginState));
+          return false;
+        }
+        const o2 = async () => {
+          await (0, __contentScope.U)(e.site, S, { waitForAppear: true });
+          return (0, __contentScope.xr)(v(), S, {
+            onResult: (state) => {
+              lastLoginState = state;
+            }
+          });
+        };
         if (await o2()) return true;
+        if (lastLoginState && shouldProbeLoginIdentity(lastLoginState) && canProbeLoginIdentityPage() && shouldProbeLoginIdentity(classifyLoginState((0, __contentScope.readLoginSnapshot)(v()))) && await enterIdentityPage(
+          { identity: lastLoginState.identity ?? null },
+          { match: `unknown`, detail: lastLoginState.detail },
+          stage,
+          { loginVerification: true }
+        ))
+          throw loginVerificationNavigation;
         let s2 = (0, __contentScope.nr)();
         if (!s2) return false;
         S.push(`检测到${s2}，等待你在当前标签页完成`), await t.needsUser(`${s2}需要你在当前标签页完成`, n);
-        let c2 = Date.now() + 3e5;
-        for (; Date.now() < c2 && (0, __contentScope.nr)(); ) await (0, __contentScope.w)(500);
-        return (0, __contentScope.nr)() ? (S.push(`${s2}等待超时`), false) : (S.push(`${s2}已完成，继续验证登录结果`), await t.markStage(r2, n), o2());
+        let c = Date.now() + 3e5;
+        for (; Date.now() < c && (0, __contentScope.nr)(); ) await (0, __contentScope.w)(500);
+        return (0, __contentScope.nr)() ? (S.push(`${s2}等待超时`), false) : (S.push(`${s2}已完成，继续验证登录结果`), await t.markStage(stage, n), o2());
+      }
+      function loginFailureMessage(fallback) {
+        return lastLoginState && lastLoginState.status !== `authenticated` ? `${fallback}：${lastLoginState.detail}` : fallback;
       }
       async function O() {
         if ((0, __contentScope.rf)(y()))
@@ -8621,6 +10403,25 @@
         let i2 = await se(`OAuth 返回页`), a2 = ce(i2);
         if (i2.identity?.identityConflict) {
           await je(i2, a2);
+          return false;
+        }
+        if (await enterIdentityPage(
+          i2,
+          a2,
+          e.stage.startsWith(`relogin`) ? `relogin-verify` : `verify-oauth`
+        ))
+          return false;
+        if (r === `github` && !hasBoundIdentity()) {
+          const binding = await me(i2, `OAuth 返回页`);
+          if (binding === `confirmed`) {
+            await t.confirmIdentity?.();
+            return true;
+          }
+          if (binding !== `switching`)
+            await t.needsUser(
+              `GitHub 首次登录身份尚未稳定（${a2.detail}），请核对本站资料页和本账号凭据`,
+              n
+            );
           return false;
         }
         if (r === `github` && e.githubCredentialsSubmitted === true && i2.identity?.source === `api` && a2.match === `confirmed` && !le(i2, a2) && !ue(i2)) {
@@ -8697,12 +10498,22 @@
           if (r3.status === `expired`) return C(`${r3.reason}；请重新登录该站点后再点「抓取登录态」`);
           r3.status === `refreshed` && (i2 = r3.tokens.accessToken, await t.saveSession?.(r3.tokens));
         }
-        let a2 = await (0, __contentScope.qi)(v(), i2);
+        let a2 = await (0, __contentScope.qi)(v(), i2, { diagnostics: S });
         if (!a2)
           return C(
             n2 ? `登录凭据已失效，请重新登录该站点后点「抓取登录态」` : `Token 无效或已过期，请重新从站点获取`
           );
-        let o2 = (0, __contentScope.Zi)(a2, e.username, g(), s);
+        if (!hasBoundIdentity() && a2.source === `api` && identitySampleKey(a2) && !ue({ identity: a2 })) {
+          await (0, __contentScope.w)(350);
+          const next = await (0, __contentScope.qi)(v(), i2, { diagnostics: S });
+          if (!stableIdentitySamples(a2, next) || ue({ identity: next }))
+            return C(`本账号 Token 返回的身份尚未形成稳定样本，已停止首次绑定和签到`);
+          if (!t.saveIdentity) return C(`无法保存本账号首次确认的 Token 身份，请重新加载扩展后重试`);
+          a2 = { ...next, verifiedByManagedLogin: true };
+          await ie(a2, true);
+          S.push(`已使用本账号 Token 确认本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`}`);
+        }
+        let o2 = ce({ identity: a2 });
         return o2.match !== `confirmed` ? C(
           o2.match === `mismatch` ? `凭据对应的不是本账号：${o2.detail}；请重新抓取该账号的登录态` : `Token 身份尚未确认：${o2.detail}；已停止签到，请核对本账号的登录态`
         ) : (S.push(`Token 认证成功：${a2.email ?? a2.username ?? a2.userId}`), await t.confirmIdentity?.(), await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), M(true));
@@ -8710,7 +10521,7 @@
       async function Ee(r2, i2 = false) {
         if (r2.status === `interrupted`) return r2.terminal ? C(r2.message) : null;
         if (r2.status === `navigate`) {
-          let i3 = ve(r2.url), a3 = Math.max((0, __contentScope.oh)(n, __contentScope.Zm), (0, __contentScope.ch)(n)), routeSteps = n.slice(a3 + 1), o2 = (0, __contentScope.ah)(routeSteps), s2 = o2.filter((e2) => (0, __contentScope.ph)(e2, i3)).length, c2 = (0, __contentScope.dh)([...o2, i3]), l2 = (0, __contentScope.mh)(routeSteps), u2 = s2 >= __contentScope.Qm ? `签到页 ${i3} 已跳转 ${s2} 次仍未到达（站点把它重定向到了 ${ve(location.href)}）` : c2 ? `签到页在 ${c2.first} 与 ${c2.second} 之间往返：站点每次都把当前页 ${ve(location.href)} 重定向回去，再跳只是原样重复` : !(0, __contentScope.af)(y()) && l2 >= __contentScope.$m ? `当前页 ${ve(location.href)} 不在学习路线上，已为此跳了 ${l2} 次仍未落到路线上` : null;
+          let i3 = ve(r2.url), a3 = Math.max((0, __contentScope.oh)(n, __contentScope.Zm), (0, __contentScope.ch)(n)), routeSteps = n.slice(a3 + 1), o2 = (0, __contentScope.ah)(routeSteps), s2 = o2.filter((e2) => (0, __contentScope.ph)(e2, i3)).length, c = (0, __contentScope.dh)([...o2, i3]), l2 = (0, __contentScope.mh)(routeSteps), u2 = s2 >= __contentScope.Qm ? `签到页 ${i3} 已跳转 ${s2} 次仍未到达（站点把它重定向到了 ${ve(location.href)}）` : c ? `签到页在 ${c.first} 与 ${c.second} 之间往返：站点每次都把当前页 ${ve(location.href)} 重定向回去，再跳只是原样重复` : !(0, __contentScope.af)(y()) && l2 >= __contentScope.$m ? `当前页 ${ve(location.href)} 不在学习路线上，已为此跳了 ${l2} 次仍未落到路线上` : null;
           if (u2) {
             let r3 = (0, __contentScope.sf)(y()), a4 = (0, __contentScope.lh)(n);
             if (r3 && !a4)
@@ -8726,11 +10537,11 @@
             S.push(`${u2}，改为在当前页直接寻找签到入口`);
             let s3 = await (0, __contentScope.Nf)(b(), S, re);
             if (s3.status === `success` || s3.status === `already`) return Ee(s3);
-            let c3 = new Set(o2);
-            c3.add(ve(location.href));
-            let l3 = __contentScope.th.find((t2) => !c3.has(t2) && (0, __contentScope.W)(e.site, t2));
+            let c2 = new Set(o2);
+            c2.add(ve(location.href));
+            let l3 = __contentScope.th.find((t2) => !c2.has(t2) && (0, __contentScope.W)(e.site, t2));
             return l3 ? (S.push(`${__contentScope.Xm}${l3}`), S.push(`当前页没有签到入口，改试常见签到路由 ${l3}`), await t.navigate(new URL(l3, location.href).href, n, `checkin`), null) : C(
-              `签到页 ${i3} 无法到达（站点重定向到 ${ve(location.href)}），已试过 ${[...c3].join(`、`)} 都没有签到入口。请打开站点编辑，把签到页改成实际地址`
+              `签到页 ${i3} 无法到达（站点重定向到 ${ve(location.href)}），已试过 ${[...c2].join(`、`)} 都没有签到入口。请打开站点编辑，把签到页改成实际地址`
             );
           }
           return S.push(`${__contentScope.Xm}${i3}`), await t.navigate(r2.url, n, `checkin`), null;
@@ -8758,6 +10569,7 @@
           `来源 ${n2?.source ?? `none`}`,
           ...n2?.endpoint ? [`实时接口 ${n2.endpoint}`] : [],
           ...n2?.evidence === `structured-fields` ? [`页面证据 来自明确的资料字段`] : [],
+          ...n2?.evidence === `profile-card` ? [`页面证据 来自个人设置中的当前用户卡片`] : [],
           ...n2?.identityConflict ? [`身份证据冲突 ${n2.identityConflict}`] : [],
           `目标 userId ${g() ?? `尚未绑定`}`,
           `userId ${n2?.userId ?? `未读取`}`,
@@ -8780,10 +10592,10 @@
       async function ke() {
         let e2 = await se(`个人资料页`), t2 = de(e2, ce(e2));
         if (canEstablishFormIdentity(e2)) {
-          const firstId = e2.identity.userId;
+          const firstIdentity = e2.identity;
           await (0, __contentScope.w)(650);
           const next = await se(`个人资料页`);
-          if (canEstablishFormIdentity(next) && next.identity.userId === firstId) {
+          if (canEstablishFormIdentity(next) && stableIdentitySamples(firstIdentity, next.identity)) {
             return {
               evidence: { ...next, managedLoginStable: true },
               verdict: de(next, ce(next))
@@ -8793,17 +10605,17 @@
             evidence: next,
             verdict: {
               match: `unknown`,
-              detail: `本账号首次登录后的用户 ID 尚未形成一致的稳定样本`
+              detail: `本账号首次登录后的身份尚未形成一致的稳定样本`
             }
           };
         }
-        if (!(y().checkin?.entry || (0, __contentScope.cf)(y())) && !e2.identity?.identityConflict)
+        if (!(y().checkin?.entry || (0, __contentScope.cf)(y()) || y().identitySource?.pagePath) && !e2.identity?.identityConflict)
           return { evidence: e2, verdict: t2 };
         S.push(
           e2.identity?.source === `api` ? `已读取实时身份接口，复核用户 ID 是否稳定` : `身份信息尚未稳定，继续复查实时接口和可见资料字段`
         );
         let n2 = Date.now() + __contentScope.nh, r2 = JSON.stringify({
-          identity: e2.identity,
+          identity: identitySampleKey(e2.identity),
           pageAccountMatch: e2.pageAccountMatch,
           match: t2.match
         }), i2 = 1, a2 = 300;
@@ -8813,7 +10625,7 @@
           e2 = await se(`个人资料页`);
           t2 = de(e2, ce(e2));
           let n3 = JSON.stringify({
-            identity: e2.identity,
+            identity: identitySampleKey(e2.identity),
             pageAccountMatch: e2.pageAccountMatch,
             match: t2.match
           });
@@ -8837,7 +10649,7 @@
           );
           return { proceed: false, result: null };
         }
-        if (r === `manual` && (s2.match !== `confirmed` || !g() && !matchesManualAccount(a2.identity))) {
+        if (r === `manual` && (s2.match !== `confirmed` || !hasBoundIdentity() && !matchesManualAccount(a2.identity))) {
           Oe(a2, s2);
           await t.needsUser(
             `页面登录身份尚未确认是账号 ${e.username}（${s2.detail}）。请在本站完成目标账号登录后重试。`,
@@ -8845,7 +10657,7 @@
           );
           return { proceed: false, result: null };
         }
-        if (r === `auto` && !g()) {
+        if (r === `auto` && !hasBoundIdentity()) {
           S.push(`首次使用本站流程，先识别登录页并使用本账号凭据建立身份`);
           const switched = await k();
           return {
@@ -8853,8 +10665,8 @@
             result: switched === `reloading` ? null : C(`本账号首次身份尚未建立，请确认登录页和账号凭据后重试`)
           };
         }
-        let c2 = !!y().checkin?.entry || (0, __contentScope.cf)(y());
-        if (c2 && r === `form` && !g()) {
+        let c = !!y().checkin?.entry || (0, __contentScope.cf)(y());
+        if (r === `form` && !hasBoundIdentity()) {
           if (canEstablishFormIdentity(a2) && a2.managedLoginStable === true) {
             if (!t.saveIdentity) {
               return {
@@ -8863,7 +10675,7 @@
               };
             }
             try {
-              await ie({ ...a2.identity, verifiedByManagedLogin: true });
+              await ie({ ...a2.identity, verifiedByManagedLogin: true }, true);
             } catch (error) {
               return {
                 proceed: false,
@@ -8872,7 +10684,9 @@
                 )
               };
             }
-            S.push(`已使用本账号凭据登录并确认本站用户 ID ${g()}，继续使用本站统一签到流程`);
+            S.push(
+              `已使用本账号凭据登录并确认本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`}，继续使用本站统一签到流程`
+            );
             (0, __contentScope.cf)(y()) && S.push(__contentScope.rh);
             await t.confirmIdentity?.();
             return { proceed: true };
@@ -8894,13 +10708,28 @@
           );
           return { proceed: false, result: null };
         }
+        if (r === `github` && !hasBoundIdentity()) {
+          const binding = await me(a2, `个人资料页`);
+          if (binding === `confirmed`) {
+            (0, __contentScope.cf)(y()) && S.push(__contentScope.rh);
+            await t.confirmIdentity?.();
+            return { proceed: true };
+          }
+          if (binding === `switching`) return { proceed: false, result: null };
+          Oe(a2, s2);
+          await t.needsUser(
+            `GitHub 首次登录身份尚未稳定（${s2.detail}），已停止签到并保留原账号数据`,
+            n
+          );
+          return { proceed: false, result: null };
+        }
         if (s2.match === `unknown` && i && a2.identity) {
           let e2 = await me(a2, `个人资料页`);
           if (e2 === `switching`) return { proceed: false, result: null };
           if (e2 === `confirmed`)
             return (0, __contentScope.cf)(y()) && S.push(__contentScope.rh), await t.confirmIdentity?.(), { proceed: true };
         }
-        if (c2 && s2.match === `unknown`)
+        if (c && s2.match === `unknown`)
           return Oe(a2, s2), await t.needsUser(
             `身份核验页仍未显示可核对的账号身份（${s2.detail}）。已停止签到和奖励读取，请确认该页面已完整加载后重试；若这一页不显示当前账号，请更新本站统一流程的身份核验页，本站账号会共用更新后的路线。`,
             n
@@ -8910,7 +10739,7 @@
           verdict: s2.match,
           expectedUserId: g(),
           siteAccountCount: e.siteAccountCount,
-          identityConfirmedThisRun: s2.match === `unknown` && !c2 && e.identityConfirmed,
+          identityConfirmedThisRun: s2.match === `unknown` && !c && e.identityConfirmed,
           checkinPageAvailable: false,
           canSwitchAccount: o
         });
@@ -8967,18 +10796,18 @@
               terminal: true
             };
         }
-        let a2 = (0, __contentScope.An)(i2) && !(0, __contentScope.ir)(i2), o2 = (0, __contentScope.xm)(`${location.pathname}${location.hash}`) && !(0, __contentScope.ir)(i2), s2 = a2 || o2 || r2.phase === `result` || r2.phase === `action` || r2.phase === `after` && r2.step?.type === `assert` ? await (0, __contentScope.qi)(v(), void 0, { serverOnly: true }) : null, c2 = s2?.source === `api` ? { identity: s2 } : j(), l2 = ce(c2);
-        if (c2.identity?.identityConflict) {
-          await je(c2, l2);
+        let a2 = (0, __contentScope.An)(i2) && !(0, __contentScope.ir)(i2), o2 = (0, __contentScope.xm)(`${location.pathname}${location.hash}`) && !(0, __contentScope.ir)(i2), s2 = a2 || o2 || r2.phase === `result` || r2.phase === `action` || r2.phase === `after` && r2.step?.type === `assert` ? await (0, __contentScope.qi)(v(), void 0, { serverOnly: true }) : null, c = s2?.source === `api` ? { identity: s2 } : j(), l2 = ce(c);
+        if (c.identity?.identityConflict) {
+          await je(c, l2);
           return {
             status: `interrupted`,
-            message: `身份证据冲突：${c2.identity.identityConflict}，已停止签到`,
+            message: `身份证据冲突：${c.identity.identityConflict}，已停止签到`,
             terminal: true
           };
         }
-        if (fe(c2, l2)) {
+        if (fe(c, l2)) {
           S.push(`学习流程中检测到账号变化：${l2.detail}`);
-          let e2 = await je(c2, de(c2, l2));
+          let e2 = await je(c, de(c, l2));
           if (!e2.proceed)
             return e2.result ? { status: `interrupted`, message: e2.result.message, terminal: true } : {
               status: `interrupted`,
@@ -8986,6 +10815,16 @@
             };
         }
         if ((a2 || o2) && s2?.source !== `api`) {
+          const loginState = await readCurrentLoginState();
+          if (loginState.status === `authenticated`) return null;
+          if (!canStartLogin(loginState)) {
+            await stopForUnconfirmedLogin(loginState);
+            return {
+              status: `interrupted`,
+              message: `学习流程中的登录状态尚未确认：${loginState.detail}`,
+              terminal: true
+            };
+          }
           let r3 = `学习流程中登录状态已失效，需要重新登录`, i3 = n.filter((e2) => e2.startsWith(__contentScope.qm)).length;
           return i3 >= __contentScope.Jm ? {
             status: `interrupted`,
@@ -9001,13 +10840,17 @@
           let e2 = await Me({ phase: `before` });
           if (e2) return e2.status === `failed` || e2.terminal ? C(e2.message) : null;
         }
-        let a2 = i2.checkin?.method === `none`, o2 = i2.checkin?.entry, s2 = i2.checkin?.method === `button` && !ge(), c2 = (0, __contentScope.rf)(i2), l2 = (0, __contentScope.sf)(i2);
-        if (c2 && !l2)
+        let a2 = i2.checkin?.method === `none`, o2 = i2.checkin?.entry, s2 = i2.checkin?.method === `button` && !ge(), c = (0, __contentScope.rf)(i2), l2 = (0, __contentScope.sf)(i2);
+        if (c && !l2)
           return S.push(`学习签到路线缺少身份核验页`), await t.needsUser(
             `本站统一签到流程没有记录到可核验账号的身份页；请用本站任一账号更新流程，先访问能显示当前账号的个人资料页，再完成签到并结束学习。更新后本站账号共用这条路线。`,
             n
           ), null;
         let u2 = (0, __contentScope.of)(i2, _), d2 = (0, __contentScope.cf)(i2), f3 = (0, __contentScope.lh)(n);
+        if (!c && !e.identityConfirmed) {
+          const observation = await se(`签到前的页面`), verdict = ce(observation);
+          if (await enterIdentityPage(observation, verdict, `checkin`)) return null;
+        }
         if (l2 && !f3 && !d2 && (g() || formLoginSubmitted || e.githubCredentialsSubmitted)) {
           const first = await (0, __contentScope.qi)(v(), void 0, { serverOnly: true });
           if (first?.source === `api` && first.userId && !first.identityConflict) {
@@ -9029,7 +10872,7 @@
           return S.push(`已到达签到目标页但本轮尚未核验个人资料身份，先返回 identityPath`), Ee({ status: `navigate`, url: l2 });
         if (a2 && l2 && !d2 && !f3)
           return S.push(`登录即签到：先按学习路线前往身份核验页 ${l2}`), r2 && S.push(`${__contentScope.ih}${e.username}`), Ee({ status: `navigate`, url: l2 });
-        let m2 = c2 && !u2, h2 = l2 ? d2 : e.stage === `checkin` || !!o2 || s2 || u2;
+        let m2 = c && !u2, h2 = l2 ? d2 : e.stage === `checkin` || !!o2 || s2 || u2;
         if ((o2 || i2.checkin?.method === `button` && e.stage !== `checkin`) && await t.markStage(`checkin`, n), h2) {
           if (!await be(`checkin`)) return C(`安全验证超时，请完成后重新签到`);
           await (0, __contentScope.U)(i2, S, { waitForAppear: true });
@@ -9073,14 +10916,6 @@
         }
         let s2 = await (0, __contentScope.Lu)(S, waitingLoginChallenge);
         if (!s2.resolved) return C(`${s2.kind ?? `Cloudflare 安全验证`}超时，请完成后重新签到`);
-        if (r === `auto` && [`login`, `relogin`, `verify`].includes(e.stage))
-          await resolvePageMethod();
-        if (e.loginEntry && r !== `auto` && r !== `token` && [`login`, `relogin`].includes(e.stage)) {
-          const choice = r === `form` ? (0, __contentScope.detectPageLogin)(e.site, e) : null;
-          loginPageDetected = !!(choice?.method === r || (0, __contentScope.findSelectedLoginControl)(e.loginEntry, r));
-        }
-        if (r === `auto` && e.stage === `relogin` && !await resolvePageMethod(1500))
-          return C(`当前页面尚未显示可识别的登录入口，请等待登录页加载完成后重试`);
         switch (s2.detected && await t.markStage(e.stage, n), e.stage) {
           case `verify-manual`:
           case `relogin-verify-manual`: {
@@ -9092,13 +10927,16 @@
           case `verify`:
             if (await (0, __contentScope.w)(800), location.origin !== (0, __contentScope.Dr)(e.site))
               return C(`登录跳转到了非本站页面，已停止自动操作`);
-            if (!await we(`verify`)) return C(`未找到明确的登录成功证据(${location.pathname})`);
+            if (!await we(`verify`))
+              return C(loginFailureMessage(`未找到明确的登录成功证据(${location.pathname})`));
             if (S.push(`登录结果已确认(${location.pathname})`), !(0, __contentScope.rf)(y())) {
-              let r2 = await (0, __contentScope.qi)(v()), i2 = { identity: r2 }, a3 = de(i2, ce(i2));
+              let i2 = await se(`登录后的页面`), r2 = i2.identity, a3 = de(i2, ce(i2));
               if (r2?.identityConflict) {
                 await je(i2, a3);
                 return null;
               }
+              if (await enterIdentityPage(i2, a3, `verify`)) return null;
+              if (r2 === `form` && !hasBoundIdentity()) return M(true);
               if (a3.match === `mismatch`)
                 return S.push(`登录后的账号身份不匹配：${a3.detail}`), await t.needsUser(
                   `登录后的账号不是 ${e.username}（${a3.detail}），已停止签到并保留原账号绑定。`,
@@ -9116,24 +10954,29 @@
             }
             return M(true);
           case `verify-oauth`:
-            return await (0, __contentScope.w)(1200), location.origin === (0, __contentScope.Dr)(e.site) ? await we(`verify-oauth`) ? (S.push(`OAuth 授权完成，已跳回本站(${location.pathname})`), await O() ? M(true) : null) : C(`OAuth 授权后缺少明确的登录成功证据`) : C(`OAuth 尚未返回本站，请在授权页完成操作`);
+            return await (0, __contentScope.w)(1200), location.origin === (0, __contentScope.Dr)(e.site) ? await we(`verify-oauth`) ? (S.push(`OAuth 授权完成，已跳回本站(${location.pathname})`), await O() ? M(true) : null) : C(loginFailureMessage(`OAuth 授权后缺少明确的登录成功证据`)) : C(`OAuth 尚未返回本站，请在授权页完成操作`);
           case `relogin`:
-            if (S.push(`开始第二次登录以完成签到`), await (0, __contentScope.U)(e.site, S), r !== `token` && !(0, __contentScope.An)(e.site)) {
-              let r2 = await (0, __contentScope.qi)(v(), void 0, {
-                serverOnly: true
-              });
-              if (r2?.source === `api` && !(0, __contentScope.ir)(e.site))
-                S.push(`站点接口仍返回登录身份，但页面上已没有站内证据，照常进行第二次登录`);
-              else if (r2?.source === `api`)
-                return S.push(`站点退出后会话仍然有效（身份接口还能读到当前账号），退出没有生效`), await t.needsUser(
-                  `本站的退出操作没有真正结束会话（退出接口返回成功，但站点仍保持登录），无法完成「退出再登录」。请在站点设置里补充退出按钮选择器（或退出前要先点开的头像菜单），或改用「登录即签到」。`,
+            S.push(`开始第二次登录以完成签到`);
+            await (0, __contentScope.U)(e.site, S, { waitForAppear: true });
+            if (r !== `token`) {
+              const loginState = await readCurrentLoginState();
+              if (loginState.status === `authenticated`)
+                return S.push(`站点退出后会话仍然有效（${loginState.detail}），退出没有生效`), await t.needsUser(
+                  `本站的退出操作没有真正结束会话（${loginState.detail}），无法完成「退出再登录」。请核对本站退出流程后重新执行。`,
                   n
                 ), null;
-              else
-                S.push(
-                  `站点身份接口没有返回当前登录身份（未登录，或接口需要扩展拿不到的认证信息），按已退出处理`
-                ), (0, __contentScope.di)();
+              if (!canStartLogin(loginState)) {
+                await t.needsUser(
+                  `退出后的登录状态尚未确认：${loginState.detail}。没有看到登录表单或登录入口，已停止第二次登录；请核对本站退出流程及当前页面。`,
+                  n
+                );
+                return null;
+              }
+              S.push(`退出后已显示登录入口，开始本账号的第二次登录`);
+              (0, __contentScope.di)();
             }
+            if (r === `auto` && !await resolvePageMethod(1500))
+              return C(`当前登录页尚未显示可识别的登录方式，请等待页面加载完成后重试`);
             if (r === `token`) {
               let t2 = e.session;
               if (!t2?.accessToken && !e.apiToken)
@@ -9166,7 +11009,11 @@
               r === `github` ? `github` : r === `passkey` ? `passkey` : `oauth`
             ) ? await (0, __contentScope.yr)(e.site, S) ? null : await we(`relogin-verify`) ? await O() ? ae(
               `退出后重新登录（${r === `passkey` ? `Passkey` : r === `github` ? `GitHub OAuth` : `OAuth`}）`
-            ) : null : C(`第二次${r === `passkey` ? ` Passkey` : ` OAuth`} 登录未确认成功`) : C(
+            ) : null : C(
+              loginFailureMessage(
+                `第二次${r === `passkey` ? ` Passkey` : ` OAuth`} 登录未确认成功`
+              )
+            ) : C(
               `未找到${r === `passkey` ? ` Passkey` : ` OAuth`} 按钮，无法完成第二次登录`
             ) : C(`安全验证超时，请完成后重新签到`)) : C(`展开第二次登录入口前的人机验证未完成`)) : (await (0, __contentScope.pr)(e.site, S, {
               beforeClick: () => E(`relogin`, __contentScope.$)
@@ -9182,19 +11029,27 @@
               afterClick: () => xe(`relogin-verify`),
               beforeAuxiliaryClick: () => E(`relogin`, __contentScope.$),
               beforeNavigate: () => t.markStage(`relogin-verify`, n)
-            }) ? await we(`relogin-verify`) ? ae(`退出后重新登录`) : C(`第二次登录未确认成功`) : C(`未能提交登录表单`)) : C(ne()));
+            }) ? await we(`relogin-verify`) ? ae(`退出后重新登录`) : C(loginFailureMessage(`第二次登录未确认成功`)) : C(`未能提交登录表单`)) : C(ne()));
           case `relogin-verify`:
-            return await (0, __contentScope.w)(1e3), await we(`relogin-verify`) ? i && !await O() ? null : (S.push(`第二次登录结果已确认，继续核验账号身份`), ae(`退出后重新登录`)) : C(`重新登录后缺少明确的登录成功证据，签到未完成`);
+            return await (0, __contentScope.w)(1e3), await we(`relogin-verify`) ? i && !await O() ? null : (S.push(`第二次登录结果已确认，继续核验账号身份`), ae(`退出后重新登录`)) : C(loginFailureMessage(`重新登录后缺少明确的登录成功证据，签到未完成`));
           default: {
-            S.push(`开始处理站点「${e.site.name}」账号 ${e.username}`), await (0, __contentScope.U)(e.site, S);
-            let i2 = loginPageDetected ? (S.push(`页面已显示登录入口，直接开始登录`), false) : await (0, __contentScope.br)(e.site, S, 6e3), a3 = null;
-            if (!i2 && !loginPageDetected && r !== `token` && !(0, __contentScope.An)(e.site)) {
-              let e2 = await (0, __contentScope.qi)(v(), void 0, {
-                serverOnly: true
-              });
-              e2?.source === `api` ? (S.push(`页面上没有登录表单，但站点接口返回了当前登录身份，按已登录处理并核对账号`), i2 = true, a3 = e2) : (S.push(
-                `站点身份接口没有返回当前登录身份（未登录，或接口需要扩展拿不到的认证信息），按未登录处理`
-              ), (0, __contentScope.di)());
+            S.push(`开始处理站点「${e.site.name}」账号 ${e.username}`), await (0, __contentScope.U)(e.site, S, { waitForAppear: true });
+            const initialLoginState = await readCurrentLoginState();
+            let i2 = initialLoginState.status === `authenticated`, a3 = initialLoginState?.status === `authenticated` ? initialLoginState.identity : null;
+            if (shouldProbeLoginIdentity(initialLoginState) && canProbeLoginIdentityPage() && shouldProbeLoginIdentity(
+              classifyLoginState((0, __contentScope.readLoginSnapshot)(v()))
+            ) && await enterIdentityPage(
+              { identity: initialLoginState.identity ?? null },
+              { match: `unknown`, detail: initialLoginState.detail },
+              e.stage,
+              { loginVerification: true }
+            ))
+              throw loginVerificationNavigation;
+            if (!i2 && r !== `token`) {
+              if (!canStartLogin(initialLoginState))
+                return stopForUnconfirmedLogin(initialLoginState);
+              S.push(`页面已明确显示登录入口，开始使用本账号保存的登录方式`);
+              (0, __contentScope.di)();
             }
             if (i2) {
               if (r === `manual`) {
@@ -9206,7 +11061,7 @@
                 );
                 return null;
               }
-              if ((r === `form` || r === `auto`) && !g() && !formLoginSubmitted) {
+              if ((r === `form` || r === `auto`) && !hasBoundIdentity() && !formLoginSubmitted) {
                 S.push(`首次确认本账号身份，先结束现有会话并使用本账号凭据登录`);
                 const switched = await k();
                 if (switched === `reloading`) return null;
@@ -9214,11 +11069,16 @@
                   switched === `blocked` ? `无法清除当前站点会话，已停止本账号首次登录；请检查 Cookie 权限后重试` : `本账号首次身份确认未完成，已停止自动重试；请检查登录凭据和站点页面`
                 );
               }
+              if (r === `github` && !hasBoundIdentity() && e.githubCredentialsSubmitted !== true) {
+                S.push(`首次确认本站 GitHub 身份，先使用本账号保存的凭据重新登录`);
+                const switched = await A();
+                return switched === `started` ? null : C(`GitHub 首次身份需要本账号的登录凭据，请检查已保存的 GitHub 用户名和密码`);
+              }
               if (e.identityConfirmed)
                 return S.push(`本轮已确认过登录账号，直接继续`), await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), M((0, __contentScope.uh)(n));
               if (y().checkin?.entry || (0, __contentScope.rf)(y()))
                 return M((0, __contentScope.uh)(n));
-              let i3 = a3 ? { identity: a3 } : await se(`当前页`), s4 = ce(i3), c3 = (0, __contentScope.Qp)({
+              let i3 = a3 ? { identity: a3 } : await se(`当前页`), s4 = ce(i3), c2 = (0, __contentScope.Qp)({
                 loginMethod: r,
                 verdict: s4.match,
                 expectedUserId: g(),
@@ -9226,19 +11086,20 @@
                 checkinPageAvailable: !!ge(),
                 canSwitchAccount: o
               });
+              if (await enterIdentityPage(i3, s4, `checkin`)) return null;
               if (i3.identity?.identityConflict) {
                 await je(i3, s4);
                 return null;
               }
-              if (c3.action === `defer-to-checkin-page`) {
+              if (c2.action === `defer-to-checkin-page`) {
                 let e2 = ge();
                 return S.push(`当前页读不到可核对的身份，先进入签到页 ${_e(e2)} 再核对账号`), await t.navigate(e2, n, `checkin`), null;
               }
-              if (c3.action === `proceed`)
-                return c3.reason === `confirmed` ? (S.push(`已确认当前登录账号：${s4.detail}`), i3.identity && !await T(i3.identity) && S.push(`当前身份证据不是站点接口结果，本轮继续但不更新长期账号映射`)) : S.push(`${r} 登录：读不到可核对的身份，但本站只有该账号，继续签到`), await t.confirmIdentity?.(), await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), M((0, __contentScope.uh)(n));
-              if (s4.match === `mismatch` && S.push(`检测到账号不符：${s4.detail}`), c3.action === `handoff`)
+              if (c2.action === `proceed`)
+                return c2.reason === `confirmed` ? (S.push(`已确认当前登录账号：${s4.detail}`), i3.identity && !await T(i3.identity) && S.push(`当前身份证据不是站点接口结果，本轮继续但不更新长期账号映射`)) : S.push(`${r} 登录：读不到可核对的身份，但本站只有该账号，继续签到`), await t.confirmIdentity?.(), await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), M((0, __contentScope.uh)(n));
+              if (s4.match === `mismatch` && S.push(`检测到账号不符：${s4.detail}`), c2.action === `handoff`)
                 return await t.needsUser(
-                  c3.reason === `mismatch-external` ? `当前浏览器登录的是别的账号（${s4.detail}）。请在浏览器里切换到 ${e.username} 后重新签到。` : `读不到当前登录身份（${s4.detail}），而本站配置了 ${e.siteAccountCount ?? `多个`} 个账号，无法确认浏览器里登录的是不是本账号。请在浏览器里确认后重新签到。`,
+                  c2.reason === `mismatch-external` ? `当前浏览器登录的是别的账号（${s4.detail}）。请在浏览器里切换到 ${e.username} 后重新签到。` : `读不到当前登录身份（${s4.detail}），而本站配置了 ${e.siteAccountCount ?? `多个`} 个账号，无法确认浏览器里登录的是不是本账号。请在浏览器里确认后重新签到。`,
                   n
                 ), null;
               if (s4.match !== `mismatch` && S.push(`无法确认当前登录身份（${s4.detail}），按切换账号处理`), o) {
@@ -9280,6 +11141,22 @@
                 return C(`当前页面尚未显示站内账密或第三方登录入口，请确认本站登录页能够正常打开`);
               }
             }
+            await (0, __contentScope.U)(e.site, S, { waitForAppear: true });
+            const beforeLoginState = await readCurrentLoginState(2500);
+            if (beforeLoginState.status === `authenticated`) {
+              S.push(`准备登录期间已确认当前会话登录，转入账号核验`);
+              if (r === `manual`) {
+                const verification = await confirmManualIdentity();
+                if (!verification.confirmed)
+                  return stopForUnconfirmedLogin({
+                    status: `pending`,
+                    reason: `identity_unstable`,
+                    detail: verification.detail
+                  });
+              }
+              return M((0, __contentScope.uh)(n));
+            }
+            if (!canStartLogin(beforeLoginState)) return stopForUnconfirmedLogin(beforeLoginState);
             if (r === `manual`) return beginManualLogin();
             if (r === `oauth` || r === `github` || r === `passkey`)
               return await (0, __contentScope.U)(e.site, S, { waitForAppear: true }), await E(e.stage, __contentScope.$) ? (await (0, __contentScope.mr)(e.site, S, r, {
@@ -9294,7 +11171,7 @@
                   beforeNavigate: () => t.markStage(`verify-oauth`, n)
                 },
                 r
-              ) ? (r === `passkey` && S.push(`已触发 Passkey 登录，请在浏览器/系统原生提示中确认`), await (0, __contentScope.yr)(e.site, S) ? null : await we(`verify-oauth`) ? await O() ? M(true) : null : C(`OAuth 授权后未能确认登录成功`)) : C(
+              ) ? (r === `passkey` && S.push(`已触发 Passkey 登录，请在浏览器/系统原生提示中确认`), await (0, __contentScope.yr)(e.site, S) ? null : await we(`verify-oauth`) ? await O() ? M(true) : null : C(loginFailureMessage(`OAuth 授权后未能确认登录成功`))) : C(
                 e.loginEntry ? `当前页面未找到账号选定的「${e.loginEntry.label}」登录入口，请手动更新本站登录方式` : r === `passkey` ? `未找到 Passkey 登录按钮，请检查选择器配置` : `未找到 OAuth 按钮，请检查选择器配置`
               )) : C(`展开第三方登录入口前的人机验证未完成`);
             if (await (0, __contentScope.pr)(e.site, S, {
@@ -9320,7 +11197,7 @@
               beforeNavigate: () => t.markStage(`verify`, n)
             }))
               return C(`未能提交登录表单`);
-            let c2 = await we(`verify`, (e2) => {
+            let c = await we(`verify`, (e2) => {
               s3 ||= e2.detected && e2.resolved && e2.kind === `Slider`;
             }), l2 = (() => {
               try {
@@ -9330,20 +11207,21 @@
                 return false;
               }
             })();
-            if (!c2 && e.stage === `login` && r === `form` && l2 && s3) {
+            if (!c && e.stage === `login` && r === `form` && l2 && s3) {
               if (await (0, __contentScope._r)(e.site, S, {
                 afterClick: () => xe(`verify`),
                 beforeNavigate: () => t.markStage(`verify`, n)
               }) === `blocked`)
                 return C(`滑块通过后无法安全地重新提交登录表单`);
-              c2 = await we(`verify`);
+              c = await we(`verify`);
             }
-            return c2 ? ((0, __contentScope.rf)(y()) || await t.confirmIdentity?.(), S.push(
+            return c ? ((0, __contentScope.rf)(y()) || await t.confirmIdentity?.(), S.push(
               (0, __contentScope.rf)(y()) ? `表单登录成功，账号身份交由个人资料页统一核验` : `本轮账号 ${e.username} 登录成功，已记住身份供后续页面使用`
-            ), await (0, __contentScope.U)(e.site, S), M(true)) : C(`登录结果未确认，请手动查看该标签页`);
+            ), await (0, __contentScope.U)(e.site, S), M(true)) : C(loginFailureMessage(`登录结果未确认，请手动查看该标签页`));
           }
         }
       } catch (e2) {
+        if (e2 === loginVerificationNavigation) return null;
         let t2 = e2 instanceof Error ? e2.message : String(e2);
         return S.push(`异常: ${t2}`), C(t2);
       }
@@ -9665,6 +11543,8 @@
     __contentState.hh = hh;
     __contentState.detectPageLogin = detectPageLogin;
     __contentState.readLoginOptions = readLoginOptions;
+    __contentState.readLoginSnapshot = readLoginSnapshot;
+    __contentState.readLoginState = readLoginState;
     __contentState.hasVisibleLogoutControl = hasVisibleLogoutControl;
     __contentState.describeLoginControl = describeLoginControl;
     __contentState.findSelectedLoginControl = findSelectedLoginControl;
@@ -9686,6 +11566,9 @@
         },
         readLoginOptions(...args) {
           return (0, __contentScope.readLoginOptions)(...args);
+        },
+        readLoginState(...args) {
+          return (0, __contentScope.readLoginState)(...args);
         },
         findSelectedLoginControl(...args) {
           return (0, __contentScope.findSelectedLoginControl)(...args);
@@ -10470,7 +12353,7 @@
         {
           order: 80,
           run() {
-            __contentState.Hn = /(?:登录|账号|账户|用户名|邮箱|密码|凭据).{0,24}(?:失败|错误|无效|不正确|不存在|已锁定|已过期|被拒绝)|(?:failed|error|invalid|incorrect|wrong|denied|expired|locked).{0,24}(?:login|account|user|email|password|credential)/i;
+            __contentState.Hn = /(?:登录|账号|账户|用户名|邮箱|密码|凭据).{0,24}(?:失败|错误|无效|不正确|不存在|已锁定|已过期|被拒绝)|(?:failed|error|invalid|incorrect|wrong|denied|expired|locked).{0,24}(?:login|account|user|email|password|credential|authentication|authorization)|(?:login|sign[\s-]?in|password|credential|authentication|authorization|oauth).{0,24}(?:failed|failure|error|invalid|incorrect|wrong|denied|expired|locked|cancelled|canceled)/i;
           }
         },
         {

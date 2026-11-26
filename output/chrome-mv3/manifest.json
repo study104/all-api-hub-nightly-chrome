@@ -10,7 +10,7 @@
     "96": "icon/96.png",
     "128": "icon/128.png"
   },
-  "version_name": "0.2.3-build-20261124-saved-login-options",
+  "version_name": "0.2.3-build-20261126-universal-login-state",
   "action": { "default_title": "打开自助签到中转站" },
   "permissions": [
     "storage",

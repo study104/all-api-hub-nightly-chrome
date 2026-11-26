@@ -910,6 +910,9 @@ export const appRuntime = createUiModuleRuntime({
           IDENTITY_ROUTE_UNREACHABLE: `identity-route-unreachable`,
           IDENTITY_EVIDENCE_CONFLICT: `identity-evidence-conflict`,
           IDENTITY_UNCONFIRMED: `identity-unconfirmed`,
+          LOGIN_UNCONFIRMED: `login-unconfirmed`,
+          LOGIN_REJECTED: `login-rejected`,
+          ACCOUNT_COMPLETION_REQUIRED: `account-completion-required`,
           AUTH_EXPIRED: `auth-expired`,
           SESSION_SWITCH_FAILED: `session-switch-failed`,
           SITE_UNAVAILABLE: `site-unavailable`,
@@ -990,6 +993,31 @@ export const appRuntime = createUiModuleRuntime({
               `若冲突持续存在，核对本账号的登录凭据，并确认站点页面显示的是目标账号`,
             ],
           },
+          [scope.Z.LOGIN_UNCONFIRMED]: {
+            title: `尚未确认登录完成`,
+            detail: `已经发起登录或第三方授权，但本轮尚未取得足够的当前会话证据。页面可能仍在授权、验证、加载或补充资料阶段；点击登录入口本身不能证明已经登录，扩展尚未继续签到。`,
+            nextActions: [
+              `切到本站标签页，确认第三方授权已经返回本站，并查看是否还需要验证码或补充资料`,
+              `展开账号详情，查看当前页面、用户信息读取来源和最后的核验原因`,
+              `若本站已经显示自己的用户 ID 或唯一登录名，可在「学习本站流程」的浮窗中点选该身份字段，保存本站共用的读取位置`,
+            ],
+          },
+          [scope.Z.LOGIN_REJECTED]: {
+            title: `站点明确报告登录失败`,
+            detail: `登录页面返回了明确的错误提示，本轮没有建立可确认的登录会话。具体原因以站点返回的原话为准。`,
+            nextActions: [
+              `展开账号详情，查看「登录状态核验[login_rejected]」后的站点错误提示`,
+              `核对本账号保存的登录方式和凭据，按站点错误提示处理后重新执行`,
+            ],
+          },
+          [scope.Z.ACCOUNT_COMPLETION_REQUIRED]: {
+            title: `登录后仍需完成账号设置`,
+            detail: `第三方授权后，本站仍显示注册、绑定邮箱或补充资料的步骤。当前还没有进入完整的本站账号会话，因此本轮尚未继续签到。`,
+            nextActions: [
+              `切到本站标签页，查看仍需完成的注册、绑定或资料填写步骤`,
+              `完成本站要求后重新执行，扩展会重新读取当前用户身份并核对目标账号`,
+            ],
+          },
           [scope.Z.AUTH_EXPIRED]: {
             title: `登录状态已失效`,
             detail: `站点不再认这个会话（cookie 过期、被别处登录顶下线，或站点主动清退了会话）。`,
@@ -1000,7 +1028,7 @@ export const appRuntime = createUiModuleRuntime({
           },
           [scope.Z.SESSION_SWITCH_FAILED]: {
             title: `无法安全切换到目标账号`,
-            detail: `站点 cookie 没清干净，或当前会话仍是别的账号。扩展在这里停下是故意的：确认不了身份就继续签到，会把奖励记到错账号上。`,
+            detail: `本站会话尚未确认已经结束，或换号后仍是其他账号。当前页面和身份读取结果没有形成足够的退出或换号证据，因此本轮尚未继续登录和签到。`,
             nextActions: [
               `确认当前加载的是最新版扩展（需要 Cookie 权限），然后在扩展管理页点一次「重新加载」`,
               `展开账号详情，看 Log 里是「清理失败」还是「仍有残留」，两者处理方式不同`,
@@ -1135,7 +1163,7 @@ export const appRuntime = createUiModuleRuntime({
         scope.oa = [
           {
             code: scope.Z.IDENTITY_EVIDENCE_CONFLICT,
-            patterns: [/身份证据冲突/, /不同用户\s*ID/i],
+            patterns: [/登录状态核验\[identity_conflict\]/, /身份证据冲突/, /不同用户\s*ID/i],
           },
           {
             code: scope.Z.ALREADY_DONE,
@@ -1186,6 +1214,8 @@ export const appRuntime = createUiModuleRuntime({
               /无法确认浏览器里登录的是不是本账号/,
               /当前浏览器登录的是别的账号/,
               /已自动切换过 GitHub 账号/,
+              /登录状态核验\[(?:identity_unstable|identity_verifying)\]/,
+              /当前登录身份[^，。；\n]{0,24}(?:发生变化|未形成连续一致|尚未形成连续一致)/,
             ],
           },
           {
@@ -1199,6 +1229,32 @@ export const appRuntime = createUiModuleRuntime({
               /等待你在/,
               /授权页/,
               /(?:请完成|请先完成|需要你|等待你)[^，。；\n]{0,10}(?:滑块|图形|行为|智能)?(?:验证|校验)/,
+              /登录状态核验\[(?:second_factor_pending|challenge_pending)\]/,
+            ],
+          },
+          {
+            code: scope.Z.ACCOUNT_COMPLETION_REQUIRED,
+            patterns: [
+              /登录状态核验\[account_completion_required\]/,
+              /授权后仍需完成注册、绑定或补充账号资料/,
+            ],
+          },
+          {
+            code: scope.Z.LOGIN_REJECTED,
+            patterns: [/登录状态核验\[login_rejected\]/, /站点返回登录失败：/],
+          },
+          {
+            code: scope.Z.LOGIN_UNCONFIRMED,
+            patterns: [
+              /登录状态核验\[(?:oauth_pending|login_form_visible|login_entry_visible|success_evidence_missing|account_shell_unverified|session_token_missing|session_probe_rejected|identity_api_unavailable|identity_response_unusable)\]/,
+              /OAuth\s*尚未返回本站/i,
+              /未取得可见登录成功控件或连续一致的当前用户身份/,
+              /OAuth\s*授权后缺少明确的登录成功证据/i,
+              /(?:重新)?登录后缺少明确(?:的)?(?:登录)?成功证据/,
+              /登录成功(?:尚未|未能|无法)确认/,
+              /登录完成(?:尚未|未能|无法)确认/,
+              /当前登录状态(?:尚未|未能|无法)确认/,
+              /登录成功证据(?:不足|缺失|未取得)/,
             ],
           },
           {
@@ -1218,6 +1274,7 @@ export const appRuntime = createUiModuleRuntime({
               /无法安全切换.*账号/,
               /退出操作没有真正结束会话/,
               /退出后会话仍然有效/,
+              /退出后的登录状态尚未确认/,
             ],
           },
           {

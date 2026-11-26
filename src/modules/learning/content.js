@@ -1,4 +1,14 @@
 import { bindContentState } from '../../shared/content-runtime.js';
+import { identitySampleKey } from '../../shared/account-identity.js';
+import { IdentitySourceLearner } from './identity-learning.js';
+import {
+  describeLotteryClick,
+  isLearnedLotteryAction,
+  mentionsLotteryAction,
+  readLotteryResultEvidence,
+  snapshotLotteryResults,
+  stableLotteryControlSelector,
+} from './lottery-learning.js';
 
 /** 学习签到内容逻辑：安全动作录制、页面引导、用户 ID 观察和学习事件回报。  */
 export function createLearningAutoContent(__contentScope) {
@@ -198,7 +208,11 @@ export function createLearningAutoContent(__contentScope) {
     if (e.type === `click`) {
       let t = (0, __contentScope.bm)(e);
       return (t && (0, __contentScope.xm)(t)) ||
-        (e.loginAction && !(e.loginAction === `submit` && __contentScope.gm.test(e.label ?? ``))) ||
+        (e.loginAction &&
+          !(
+            e.loginAction === `submit` &&
+            (__contentScope.gm.test(e.label ?? ``) || isLearnedLotteryAction(e))
+          )) ||
         (0, __contentScope.wm)(e) ||
         (0, __contentScope.Em)(e)
         ? `none`
@@ -208,7 +222,11 @@ export function createLearningAutoContent(__contentScope) {
             ? `confirmed`
             : (0, __contentScope.Tm)(e)
               ? `none`
-              : e.label && __contentScope.gm.test(e.label)
+              : isLearnedLotteryAction(e) ||
+                  (e.label &&
+                    !e.href &&
+                    !mentionsLotteryAction(e.label) &&
+                    __contentScope.gm.test(e.label))
                 ? `action`
                 : `none`;
     }
@@ -730,6 +748,17 @@ export function createLearningAutoContent(__contentScope) {
         if (!(0, __contentScope.dg)(t, e)) return t;
       }
     }
+    if (
+      describeLotteryClick(
+        e,
+        (0, __contentScope.yg)(e),
+        (0, __contentScope.bg)(),
+        __contentScope.Eg,
+      )
+    ) {
+      const selector = stableLotteryControlSelector(e, document);
+      if (selector) return selector;
+    }
     let a = (0, __contentScope.lg)(e);
     return a.length > 0
       ? [...a, (0, __contentScope.ug)(e, e.getRootNode())].join(` >>> `)
@@ -860,7 +889,7 @@ export function createLearningAutoContent(__contentScope) {
     return e.top === e.self;
   }
 
-  function Lg(e, t) {
+  function Lg(e, t, options = {}) {
     let n = e.createElement(`div`);
     (n.setAttribute(__contentScope.Fg, t.title),
       n.style.setProperty(`position`, `fixed`),
@@ -881,8 +910,25 @@ export function createLearningAutoContent(__contentScope) {
     let c = e.createElement(`div`);
     c.className = `hint`;
     let l = e.createElement(`div`);
+    let identityStatus = e.createElement('div');
+    identityStatus.className = 'identity-status';
+    let identityControls = e.createElement('div');
+    identityControls.className = 'identity-controls';
+    const identityButtons = [];
+    for (const [field, label] of [
+      ['userId', '选择用户 ID'],
+      ['username', '选择登录名'],
+      ['email', '选择邮箱'],
+    ]) {
+      const button = e.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.addEventListener('click', () => options.onPickIdentity?.(field));
+      identityButtons.push([field, button]);
+      identityControls.append(button);
+    }
     ((l.className = `warning`),
-      a.append(s, o, c, l),
+      a.append(s, o, c, l, identityStatus, identityControls),
       r.append(i, a),
       (e.body ?? e.documentElement)?.append(n));
     function u(t) {
@@ -917,6 +963,11 @@ export function createLearningAutoContent(__contentScope) {
             .filter((e) => e.trim().length > 0)
             .join(` `),
         update: u,
+        updateIdentity(text, picking) {
+          identityStatus.textContent = text;
+          for (const [field, button] of identityButtons)
+            button.setAttribute('aria-pressed', String(field === picking));
+        },
         destroy: () => n.remove(),
       }
     );
@@ -927,12 +978,20 @@ export function createLearningAutoContent(__contentScope) {
       n = e.canRender ?? __contentScope.Pg,
       r = `checkin`,
       i = [],
-      a = null;
+      a = null,
+      identityController,
+      identityStatus = '自动查找当前用户的身份，也可点选页面中的身份字段',
+      identityPicking = null;
     function o() {
       return (0, __contentScope.Bm)((0, __contentScope.jm)(i, r));
     }
     function s() {
-      return n() ? ((a ??= (0, __contentScope.Lg)(t, o())), a) : null;
+      if (!n()) return null;
+      a ??= (0, __contentScope.Lg)(t, o(), {
+        onPickIdentity: (field) => identityController?.pickIdentity?.(field),
+      });
+      a.updateIdentity?.(identityStatus, identityPicking);
+      return a;
     }
     return {
       begin(e) {
@@ -941,31 +1000,42 @@ export function createLearningAutoContent(__contentScope) {
       push(e) {
         (i.push(e), s()?.update(o()));
       },
+      setIdentityController(controller) {
+        identityController = controller;
+      },
+      setIdentityStatus(text, picking) {
+        identityStatus = text;
+        identityPicking = picking;
+        s()?.updateIdentity?.(text, picking);
+      },
       end() {
-        (a?.destroy(), (a = null), (i = []));
+        (a?.destroy(), (a = null), (i = []), (identityController = undefined));
+        identityStatus = '自动查找当前用户的身份，也可点选页面中的身份字段';
+        identityPicking = null;
       },
     };
   }
 
-  function createLearningIdentityMonitor(send) {
+  function createLearningIdentityMonitor(send, options = {}) {
     let timer,
       previous,
       sent,
       pending = Promise.resolve(),
       failure;
     function observe() {
-      const identity = (0, __contentScope.Bi)();
+      const identity = options.readVisible ? options.readVisible() : (0, __contentScope.Bi)();
       const identityPath = location.pathname + location.hash;
-      if (!identity?.userId) {
+      const sampleKey = identitySampleKey(identity);
+      if (!sampleKey) {
         previous = undefined;
         sent = undefined;
         return;
       }
       const key = JSON.stringify([
         identityPath,
-        identity.userId,
-        identity.username,
-        identity.email,
+        sampleKey,
+        identity.identitySource,
+        identity.selectedFields,
       ]);
       if (key !== previous) {
         previous = key;
@@ -978,8 +1048,10 @@ export function createLearningAutoContent(__contentScope) {
         .then((result) => {
           if (!result?.ok) throw Error(result?.error || '学习页用户 ID 未保存');
           if (result.ignored) sent = undefined;
+          failure = undefined;
         })
         .catch((error) => {
+          sent = undefined;
           failure = error;
         });
     }
@@ -1004,13 +1076,15 @@ export function createLearningAutoContent(__contentScope) {
     };
   }
 
-  function zg(e, t, n, onIdentity) {
+  function zg(e, t, n, onIdentity, session = {}) {
     let r = new Set(),
       i,
+      events = [...(session.events ?? [])],
       a = new __contentScope.Ng({
         kind: e,
         personalTexts: n,
         onEvent(e) {
+          events.push(e);
           let n = t(e).then(
             (e) => {
               e.ok || (i ??= e.error ?? `学习事件未保存`);
@@ -1022,22 +1096,53 @@ export function createLearningAutoContent(__contentScope) {
           (r.add(n), n.then(() => r.delete(n)));
         },
       });
+    const identityTools =
+      onIdentity && session.identitySite && window.top === window
+        ? new IdentitySourceLearner({
+            site: session.identitySite,
+            send: onIdentity,
+            requestIdentity: (site, token, options) => (0, __contentScope.qi)(site, token, options),
+            getProgress: () => ({
+              ...(0, __contentScope.jm)(events, e),
+              loginAt: [...events]
+                .reverse()
+                .find(
+                  (event) =>
+                    event.loginAction === 'submit' ||
+                    event.loginAction === 'oauth' ||
+                    (event.type === 'fill' &&
+                      event.fieldRole === 'password' &&
+                      event.key === 'Enter'),
+                )?.at,
+            }),
+            onStatus: (text, picking) => __contentScope.Bg.setIdentityStatus(text, picking),
+            wait: (ms) => (0, __contentScope.w)(ms),
+          })
+        : null;
     let identityMonitor =
       onIdentity && window.top === window
-        ? (0, __contentScope.createLearningIdentityMonitor)(onIdentity)
+        ? (0, __contentScope.createLearningIdentityMonitor)(
+            identityTools ? (observation) => identityTools.reportVisible(observation) : onIdentity,
+            identityTools ? { readVisible: () => identityTools.readVisible() } : {},
+          )
         : null;
     return {
+      pickIdentity: (field) => identityTools?.pick(field),
+      isPickingIdentity: () => !!identityTools?.picking,
       start: () => {
+        identityTools?.start();
         a.attach();
         identityMonitor?.start();
       },
       stop: () => {
         a.detach();
         identityMonitor?.stop();
+        identityTools?.stop();
       },
       async flush() {
         for (a.flushPending(); r.size;) await Promise.all([...r]);
         await identityMonitor?.flush();
+        await identityTools?.flush();
         if (i) throw Error(i);
         return {
           challengeSeen: a.sawChallengeField,
@@ -1070,8 +1175,12 @@ export function createLearningAutoContent(__contentScope) {
           runId: e.runId,
           observation,
         }),
+      e,
     );
-    ((__contentScope.Vg = { ...t, runId: e.runId }), t.start(), __contentScope.Bg.begin(e));
+    ((__contentScope.Vg = { ...t, runId: e.runId }),
+      __contentScope.Bg.begin(e),
+      __contentScope.Bg.setIdentityController(t),
+      t.start());
   }
 
   function Wg() {
@@ -1159,8 +1268,8 @@ export function createLearningAutoContent(__contentScope) {
       stopRecording() {
         return (0, __contentScope.Hg)();
       },
-      createIdentityMonitor(send) {
-        return (0, __contentScope.createLearningIdentityMonitor)(send);
+      createIdentityMonitor(send, options) {
+        return (0, __contentScope.createLearningIdentityMonitor)(send, options);
       },
       createRecorder(...args) {
         return (0, __contentScope.zg)(...args);
@@ -1528,6 +1637,7 @@ export function createLearningAutoContent(__contentScope) {
             mouseDown = null;
             pointerUp = null;
             pendingKey = null;
+            lotteryActionAt = null;
             unlearned = [];
             isPersonal;
             constructor(e) {
@@ -1643,13 +1753,34 @@ export function createLearningAutoContent(__contentScope) {
               );
             }
             currentElement(e) {
-              let t = null;
+              if (
+                e
+                  .composedPath()
+                  .some(
+                    (node) =>
+                      node?.hasAttribute?.('data-checkin-learning-guide') ||
+                      node?.hasAttribute?.('data-checkin-identity-picker'),
+                  )
+              )
+                return null;
+              let t = null,
+                lotteryControl = null;
               for (let n of e.composedPath())
                 if (n instanceof HTMLElement) {
                   if ((0, __contentScope.Tg)(n)) return n;
                   !t && (0, __contentScope.Eg)(n) && (t = n);
+                  if (
+                    !lotteryControl &&
+                    describeLotteryClick(
+                      n,
+                      (0, __contentScope.yg)(n),
+                      (0, __contentScope.bg)(),
+                      __contentScope.Eg,
+                    )
+                  )
+                    lotteryControl = n;
                 }
-              return t;
+              return lotteryControl ?? t;
             }
             recordNavigation = () => {
               let e = (0, __contentScope.bg)();
@@ -1874,7 +2005,7 @@ export function createLearningAutoContent(__contentScope) {
                 this.pointerUp = null;
               }
               let n = this.currentElement(e);
-              if (!n) return;
+              if (!n || (0, __contentScope.R)(n)) return;
               if ((0, __contentScope.Ql)(n)) {
                 this.unlearned.push(
                   `点击人机验证控件：这一步不会写进流程，回放时由自动验证接管，可能需要人工完成`,
@@ -1887,12 +2018,17 @@ export function createLearningAutoContent(__contentScope) {
                 a = (0, __contentScope.bg)(),
                 o = (0, __contentScope._g)(n, this.isPersonal),
                 s = (0, __contentScope.yg)(n),
+                lotteryAction =
+                  this.learningKind !== `login` && describeLotteryClick(n, s, a, __contentScope.Eg),
                 c =
                   this.fused || this.learningKind === `login`
                     ? (0, __contentScope.Mg)(n, (0, __contentScope.vg)(n), i, this.passwordSeen)
                     : void 0,
                 l = Date.now(),
                 u = this.learningKind === `login` ? [] : (0, __contentScope.qh)(),
+                lotteryBefore = lotteryAction
+                  ? snapshotLotteryResults(document, __contentScope.Kh)
+                  : null,
                 d = this.takeScroll(),
                 f = (0, __contentScope.Lh)(n),
                 p = (0, __contentScope.Bh)(
@@ -1908,6 +2044,7 @@ export function createLearningAutoContent(__contentScope) {
                   : h !== void 0 && h >= 500 && (g = `long-press`);
               let _ = this.takePendingKey(n),
                 v = (0, __contentScope.gg)(n);
+              if (lotteryAction) this.lotteryActionAt = l;
               if (
                 (this.onEvent({
                   ...p,
@@ -1915,6 +2052,7 @@ export function createLearningAutoContent(__contentScope) {
                   selector: o,
                   label: s,
                   path: a,
+                  ...(lotteryAction ? { checkinAction: lotteryAction } : {}),
                   ...(i ? { href: i } : {}),
                   ...(c ? { loginAction: c } : {}),
                   ...(m ? { anchor: m } : {}),
@@ -1929,12 +2067,22 @@ export function createLearningAutoContent(__contentScope) {
                 return;
               let y = () => {
                 if (!this.attached || (0, __contentScope.bg)() !== a) return;
+                if (lotteryAction && this.lotteryActionAt !== l) return;
                 let e = (0, __contentScope.Jh)(
                     u,
                     (0, __contentScope.qh)(),
                     (0, __contentScope.Sg)(),
                   ),
-                  t = (0, __contentScope.Wh)((0, __contentScope.Sg)(), __contentScope.it.test(s));
+                  t = lotteryBefore
+                    ? readLotteryResultEvidence(
+                        lotteryBefore,
+                        document,
+                        __contentScope.Kh,
+                        __contentScope.fg,
+                      )
+                    : (0, __contentScope.Wh)((0, __contentScope.Sg)());
+                // 抽奖只学习结果标志，中奖兑换码和页面里其它新出现的文本不进入共享流程。
+                if (lotteryBefore) e = t?.words;
                 (e || t) &&
                   this.onEvent({
                     ...p,
@@ -1942,13 +2090,14 @@ export function createLearningAutoContent(__contentScope) {
                     selector: o,
                     label: s,
                     path: a,
+                    ...(lotteryAction ? { checkinAction: lotteryAction } : {}),
                     ...(i ? { href: i } : {}),
                     ...(e ? { afterText: e } : {}),
                     ...(t ? { evidence: t } : {}),
                     at: l,
                   });
               };
-              if ((this.schedule(y), __contentScope.it.test(s)))
+              if ((this.schedule(y), lotteryAction))
                 for (let e of [2500, 6e3, 12e3]) this.schedule(y, e);
             };
             onInput = (e) => {
@@ -2086,6 +2235,15 @@ export function createLearningAutoContent(__contentScope) {
 .step-number { opacity: .7; margin-right: 2px; }
 .hint { margin-top: 2px; color: #cbd5e1; }
 .warning { margin-top: 4px; color: #fde68a; }
+.identity-status { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(148,163,184,.3); color: #bae6fd; overflow-wrap: anywhere; }
+.identity-controls { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.identity-controls button {
+  pointer-events: auto !important;
+  font: inherit; color: #f8fafc; background: #334155;
+  border: 1px solid #64748b; border-radius: 5px; padding: 3px 6px; cursor: pointer;
+}
+.identity-controls button:hover { background: #475569; }
+.identity-controls button[aria-pressed="true"] { color: #0f172a; background: #fbbf24; border-color: #fbbf24; }
 `;
         },
       },

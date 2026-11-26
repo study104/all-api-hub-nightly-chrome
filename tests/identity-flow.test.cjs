@@ -29,6 +29,8 @@ function readScript(base, relativePath) {
           'shared',
           kind === 'content' ? 'content-support.js' : 'background-platform.js',
         ),
+        path.join(root, 'src', 'shared', 'account-identity.js'),
+        path.join(root, 'src', 'shared', 'login-state.js'),
         ...(kind === 'background' ? [path.join(root, 'src', 'entries', 'background.js')] : []),
       ].filter((filename) => fs.existsSync(filename));
   const functions = new Map();
@@ -51,7 +53,27 @@ function readScript(base, relativePath) {
   }
   return {
     functions(...names) {
-      const implementation = names
+      const sharedIdentityFunctions = [
+        'readIdentitySource',
+        'readIdentityFieldRules',
+        'parseVisibleUserIdLabel',
+        'identitySourceLabel',
+        'identitiesEqual',
+        'parseIdentityResponse',
+        'findIdentityMatch',
+        'findIdentityOwner',
+        'compareAccountIdentity',
+        'identitySampleKey',
+        'stableIdentitySamples',
+        'conflictingIdentitySamples',
+        'resolveIdentityPage',
+        'isIdentityElementVisible',
+        'loginStateLog',
+        'classifyLoginState',
+      ];
+      const implementation = [
+        ...new Set([...sharedIdentityFunctions.filter((name) => functions.has(name)), ...names]),
+      ]
         .map((name) => {
           const found = functions.get(name);
           assert.equal(found?.length, 1, `Expected one declaration of ${name}`);
@@ -154,6 +176,19 @@ for (const base of ['', 'output/chrome-mv3']) {
     loginMethod = 'form',
     workflow = true,
     siteAccountCount = 2,
+    pathname = '/profile',
+    identitySource,
+    boundUsername,
+    boundEmail,
+    username = '3914认识',
+    githubSubmitted = false,
+    githubCredentials = false,
+    loginState = {
+      status: 'pending',
+      reason: 'login_form_visible',
+      detail: '页面显示登录表单',
+    },
+    loginStates,
   } = {}) {
     const actions = {
       checkins: 0,
@@ -166,11 +201,18 @@ for (const base of ['', 'output/chrome-mv3']) {
       identityReads: 0,
       identityTokens: [],
       balanceReads: 0,
+      githubLogouts: 0,
+      loginReads: 0,
+      oauthClicks: 0,
+      credentialFills: 0,
+      noticeChecks: [],
     };
     let now = 1000;
     let sampleIndex = 0;
+    let latestLoginState = loginState;
     const identity = () => {
-      const sample = samples?.[Math.min(sampleIndex++, samples.length - 1)] ?? pageId;
+      const sample = samples ? samples[Math.min(sampleIndex++, samples.length - 1)] : pageId;
+      if (sample == null) return null;
       return typeof sample === 'object'
         ? sample
         : { userId: sample, username: '3914', source: 'visible' };
@@ -186,9 +228,9 @@ for (const base of ['', 'output/chrome-mv3']) {
       Date: clock,
       console: { log() {} },
       location: {
-        href: 'https://skybaby.us.ci/profile',
+        href: `https://skybaby.us.ci${pathname}`,
         origin: 'https://skybaby.us.ci',
-        pathname: '/profile',
+        pathname,
         hash: '',
       },
       document: { body: { innerText: '' } },
@@ -213,8 +255,32 @@ for (const base of ['', 'output/chrome-mv3']) {
       Gi: () => null,
       Dr: () => 'https://skybaby.us.ci',
       xr: () => true,
+      br: async () => false,
+      readLoginState: async () => {
+        latestLoginState = loginStates
+          ? loginStates[Math.min(actions.loginReads, loginStates.length - 1)]
+          : loginState;
+        actions.loginReads += 1;
+        return latestLoginState;
+      },
+      readLoginSnapshot: () => ({
+        sameOrigin: true,
+        loginForm: latestLoginState.reason === 'login_form_visible',
+        loginEntry: latestLoginState.reason === 'login_entry_visible',
+        logoutControl: latestLoginState.status === 'authenticated',
+      }),
+      rr: () => pathname !== '/login',
+      mr: async () => {},
+      vr: async () => {
+        actions.oauthClicks += 1;
+        return true;
+      },
+      yr: async () => false,
       pr: async () => {},
-      hr: async () => true,
+      hr: async () => {
+        actions.credentialFills += 1;
+        return true;
+      },
       gr: async () => true,
       ea: () => true,
       za: async () => {
@@ -230,7 +296,9 @@ for (const base of ['', 'output/chrome-mv3']) {
       w: async (ms) => {
         now += ms;
       },
-      U: async () => {},
+      U: async (site, log, options) => {
+        actions.noticeChecks.push(plain(options ?? {}));
+      },
       di: () => {},
       Wp: () => null,
       Lu: async () => ({ resolved: true, detected: false }),
@@ -246,12 +314,18 @@ for (const base of ['', 'output/chrome-mv3']) {
     );
     const task = {
       accountId: 'account-3914',
-      username: '3914认识',
+      username,
       password: 'test-only',
       apiToken: loginMethod === 'token' ? 'test-only-token' : undefined,
       effectiveLoginMethod: loginMethod,
       accountIdentityUserId: boundId,
+      accountIdentityUsername: boundUsername,
+      accountIdentityEmail: boundEmail,
       formCredentialsSubmitted: formSubmitted,
+      githubCredentialsSubmitted: githubSubmitted,
+      ...(githubSubmitted || githubCredentials
+        ? { githubUsername: 'saved-github-login', githubPassword: 'saved-github-password' }
+        : {}),
       siteAccountCount,
       siteAccountUserIds: { 303: '3241rgs' },
       stage,
@@ -260,6 +334,17 @@ for (const base of ['', 'output/chrome-mv3']) {
         id: 'skybaby',
         loginUrl: 'https://skybaby.us.ci/login',
         loginMethod,
+        ...(loginMethod === 'token'
+          ? {
+              tokenConfig: {
+                storageKey: 'token',
+                storageType: 'localStorage',
+                headerName: 'Authorization',
+                headerPrefix: 'Bearer ',
+              },
+            }
+          : {}),
+        ...(identitySource ? { identitySource } : {}),
         checkin: {
           method: workflow ? 'workflow' : 'none',
           ...(workflow
@@ -283,6 +368,13 @@ for (const base of ['', 'output/chrome-mv3']) {
       async confirmIdentity() {
         actions.confirms += 1;
       },
+      ...(githubSubmitted || githubCredentials
+        ? {
+            async startGithubLogout() {
+              actions.githubLogouts += 1;
+            },
+          }
+        : {}),
       ...(canSaveIdentity
         ? {
             async saveIdentity(identity) {
@@ -694,6 +786,388 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.match(actions.handoffs[0], /身份|用户 ID/);
   });
 
+  for (const stage of ['checkin', 'verify', 'relogin-verify']) {
+    test(`${label}: ${stage} uses the shared identity page before rejecting missing dashboard IDs`, async () => {
+      const { actions, result } = await replay({
+        stage,
+        workflow: false,
+        pathname: '/console',
+        identitySource: { pagePath: '/console/personal' },
+        samples: [{ username: '3914', source: 'api' }],
+      });
+      assert.equal(result, null);
+      assert.equal(actions.checkins, 0);
+      assert.equal(actions.confirms, 0);
+      assert.equal(actions.balanceReads, 0);
+      assert.equal(actions.clears, 0);
+      assert.deepEqual(actions.handoffs, []);
+      assert.deepEqual(actions.navigations, [
+        { url: 'https://skybaby.us.ci/console/personal', stage },
+      ]);
+    });
+  }
+
+  test(`${label}: second login verifies a stable profile card before saving its result`, async () => {
+    const { actions, result } = await replay({
+      stage: 'relogin-verify',
+      workflow: false,
+      pathname: '/console/personal',
+      identitySource: { pagePath: '/console/personal' },
+      samples: [
+        { userId: '304', username: 'github_3914', source: 'visible', evidence: 'profile-card' },
+      ],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.confirms, 1);
+    assert.ok(actions.identityReads >= 2);
+    assert.ok(actions.balanceReads > 0);
+    assert.deepEqual(actions.identities, []);
+    assert.deepEqual(actions.handoffs, []);
+  });
+
+  test(`${label}: a different visible user ID is a definite GitHub account mismatch`, async () => {
+    const { actions, result } = await replay({
+      loginMethod: 'github',
+      samples: [
+        { userId: '305', username: 'github_other', source: 'visible', evidence: 'profile-card' },
+      ],
+    });
+    assert.equal(result, null);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.confirms, 0);
+    assert.equal(actions.handoffs.length, 1);
+    assert.match(actions.handoffs[0], /用户 ID 305/);
+    assert.match(actions.handoffSteps[0].join('\n'), /结论 mismatch/);
+    assert.doesNotMatch(actions.handoffSteps[0].join('\n'), /只读到第三方句柄/);
+  });
+
+  test(`${label}: first managed login binds a name-only site's exact login name`, async () => {
+    const { actions, result } = await replay({
+      boundId: null,
+      username: '3914',
+      formSubmitted: true,
+      samples: [{ username: '3914', source: 'api' }],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.deepEqual(actions.identities, [
+      { username: '3914', source: 'api', verifiedByManagedLogin: true },
+    ]);
+  });
+
+  test(`${label}: saved name-only identities reuse the same workflow without logging in again`, async () => {
+    const { actions, result } = await replay({
+      boundId: null,
+      boundUsername: 'site-3914',
+      samples: [{ username: 'site-3914', source: 'api' }],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.deepEqual(actions.handoffs, []);
+  });
+
+  test(`${label}: first GitHub binding uses its own credentials and stable site ID despite a generated name`, async () => {
+    const { actions, result } = await replay({
+      loginMethod: 'github',
+      boundId: null,
+      githubSubmitted: true,
+      samples: [
+        { userId: '304', username: 'github_987', source: 'visible', evidence: 'profile-card' },
+      ],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.identities[0].userId, '304');
+    assert.equal(actions.identities[0].verifiedByManagedLogin, true);
+  });
+
+  test(`${label}: first GitHub binding does not reuse another browser session`, async () => {
+    const { actions, result } = await replay({
+      loginMethod: 'github',
+      boundId: null,
+      githubCredentials: true,
+      samples: [{ userId: '304', username: 'saved-github-login', source: 'api' }],
+    });
+    assert.equal(result, null);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.confirms, 0);
+    assert.equal(actions.clears, 1);
+    assert.equal(actions.githubLogouts, 1);
+    assert.deepEqual(actions.identities, []);
+  });
+
+  test(`${label}: an existing OAuth session verifies its bound account without searching for a provider entry`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      username: 'googkang',
+      samples: [{ userId: '304', username: 'Yankangg302', source: 'api' }],
+      loginState: {
+        status: 'authenticated',
+        reason: 'logout_control',
+        detail: '页面显示可见的退出登录控件',
+      },
+    });
+    assert.equal(result?.ok, true, result?.message);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.loginReads, 1);
+    assert.equal(actions.noticeChecks[0].waitForAppear, true);
+  });
+
+  test(`${label}: an authenticated OAuth page still rejects a different bound user ID`, async () => {
+    const { actions } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      boundId: '305',
+      samples: [{ userId: '304', username: 'googkang', source: 'api' }],
+      loginState: {
+        status: 'authenticated',
+        reason: 'stable_api_identity',
+        detail: '当前用户接口连续返回用户 ID 304',
+      },
+    });
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.credentialFills, 0);
+    assert.deepEqual(actions.identities, []);
+    assert.ok(actions.handoffs.some((message) => /身份|账号|304|305/.test(message)));
+  });
+
+  test(`${label}: a confirmed logged-in page with unreadable identity stops at account verification and never searches for Google`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      samples: [null],
+      loginState: {
+        status: 'authenticated',
+        reason: 'logout_control',
+        detail: '页面显示可见的退出登录控件',
+      },
+    });
+    assert.equal(result, null);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.clears, 0);
+    assert.deepEqual(actions.identities, []);
+    assert.ok(actions.handoffs.some((message) => /账号身份|身份核验|无法确认/.test(message)));
+    assert.ok(actions.handoffs.every((message) => !/未找到.*Google|更新.*登录方式/.test(message)));
+  });
+
+  test(`${label}: unavailable or unstable login evidence cannot start OAuth or clear the existing session`, async () => {
+    for (const state of [
+      {
+        status: 'pending',
+        reason: 'success_evidence_missing',
+        detail: '当前用户接口未返回可核对字段',
+      },
+      {
+        status: 'pending',
+        reason: 'identity_unstable',
+        detail: '当前登录身份尚未形成连续一致的有效样本',
+      },
+      {
+        status: 'blocked',
+        reason: 'challenge_pending',
+        detail: '安全验证尚未完成',
+      },
+      {
+        status: 'blocked',
+        reason: 'account_completion_required',
+        detail: '授权后仍需完成账号资料',
+      },
+      ...[
+        'account_shell_unverified',
+        'session_token_missing',
+        'session_probe_rejected',
+        'identity_api_unavailable',
+        'identity_response_unusable',
+      ].map((reason) => ({
+        status: 'pending',
+        reason,
+        detail: '当前会话尚未取得有效的身份读取证据',
+      })),
+    ]) {
+      const { actions, result } = await replay({
+        stage: 'login',
+        loginMethod: 'oauth',
+        samples: [null],
+        loginState: state,
+      });
+      assert.equal(result, null, state.reason);
+      assert.equal(actions.oauthClicks, 0, state.reason);
+      assert.equal(actions.credentialFills, 0, state.reason);
+      assert.equal(actions.clears, 0, state.reason);
+      assert.equal(actions.checkins, 0, state.reason);
+      assert.deepEqual(actions.identities, [], state.reason);
+      assert.equal(actions.handoffs.length, 1, state.reason);
+      assert.doesNotMatch(actions.handoffs[0], /未找到.*Google|更新.*登录方式/);
+    }
+  });
+
+  test(`${label}: an explicit visible OAuth entry is required before starting the saved login method`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      samples: [{ userId: '304', source: 'api' }],
+      loginState: {
+        status: 'pending',
+        reason: 'login_entry_visible',
+        detail: '页面显示 Google 登录入口',
+      },
+    });
+    assert.equal(result?.ok, true, result?.message);
+    assert.equal(actions.oauthClicks, 1);
+    assert.equal(actions.checkins, 1);
+  });
+
+  test(`${label}: OAuth completed during page preparation is rechecked before looking for Google`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      samples: [{ userId: '304', source: 'api' }],
+      loginStates: [
+        {
+          status: 'pending',
+          reason: 'login_entry_visible',
+          detail: '页面仍显示登录入口',
+        },
+        {
+          status: 'authenticated',
+          reason: 'logout_control',
+          detail: '弹窗授权返回后已显示当前用户菜单',
+        },
+      ],
+    });
+    assert.equal(result?.ok, true, result?.message);
+    assert.equal(actions.loginReads, 2);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.checkins, 1);
+    assert.ok(result.steps.some((step) => /准备登录期间已确认当前会话登录/.test(step)));
+  });
+
+  test(`${label}: a disappearing login entry triggers another session diagnosis instead of a missing-provider error`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'oauth',
+      samples: [null],
+      loginStates: [
+        {
+          status: 'pending',
+          reason: 'login_entry_visible',
+          detail: '页面显示登录入口',
+        },
+        {
+          status: 'pending',
+          reason: 'success_evidence_missing',
+          detail: '页面更新后尚未取得会话证据',
+        },
+      ],
+    });
+    assert.equal(result, null);
+    assert.equal(actions.loginReads, 2);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.checkins, 0);
+    assert.match(actions.handoffs[0], /当前登录状态尚未确认/);
+    assert.doesNotMatch(actions.handoffs[0], /未找到.*Google|更新.*登录方式/);
+  });
+
+  test(`${label}: a still authenticated page prevents a second login even when the identity API is unavailable`, async () => {
+    const { actions, result } = await replay({
+      stage: 'relogin',
+      loginMethod: 'oauth',
+      samples: [null],
+      loginState: {
+        status: 'authenticated',
+        reason: 'logout_control',
+        detail: '页面仍显示退出登录控件',
+      },
+    });
+    assert.equal(result, null);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.clears, 0);
+    assert.match(actions.handoffs[0], /退出操作没有真正结束会话/);
+  });
+
+  test(`${label}: missing evidence after logout cannot be treated as a completed logout`, async () => {
+    const { actions, result } = await replay({
+      stage: 'relogin',
+      loginMethod: 'form',
+      samples: [null],
+      loginState: {
+        status: 'pending',
+        reason: 'success_evidence_missing',
+        detail: '没有读到登录或退出证据',
+      },
+    });
+    assert.equal(result, null);
+    assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.clears, 0);
+    assert.match(actions.handoffs[0], /退出后的登录状态尚未确认/);
+  });
+
+  test(`${label}: an account's own Token establishes its first stable API user ID`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'token',
+      boundId: null,
+      samples: [{ userId: '304', source: 'api' }],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.clears, 1);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.identities[0].userId, '304');
+    assert.equal(actions.identities[0].verifiedByManagedLogin, true);
+    assert.deepEqual(actions.identityTokens.slice(0, 2), ['test-only-token', 'test-only-token']);
+  });
+
+  test(`${label}: unstable first Token identity cannot bind or run check-in`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      loginMethod: 'token',
+      boundId: null,
+      samples: [
+        { userId: '304', source: 'api' },
+        { userId: '305', source: 'api' },
+      ],
+    });
+    assert.equal(result?.ok, false);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.confirms, 0);
+    assert.deepEqual(actions.identities, []);
+    assert.match(result.message, /稳定/);
+  });
+
+  test(`${label}: a profile redirect loop during second verification stops without another login`, async () => {
+    const { actions, result } = await replay({
+      stage: 'relogin-verify',
+      workflow: false,
+      pathname: '/console',
+      identitySource: { pagePath: '/console/personal' },
+      samples: [{ username: '3914', source: 'visible' }],
+      steps: ['身份读取进入资料页: /console/personal（第二次登录）'],
+    });
+    assert.equal(result, null);
+    assert.equal(actions.checkins, 0);
+    assert.equal(actions.confirms, 0);
+    assert.equal(actions.clears, 0);
+    assert.deepEqual(actions.navigations, []);
+    assert.equal(actions.handoffs.length, 1);
+    assert.match(actions.handoffSteps[0].join('\n'), /身份核验页未能到达/);
+  });
+
   test(`${label}: replay continues for stable ID 304 and never clears its cookies`, async () => {
     const { actions, result } = await replay();
     assert.equal(result?.ok, true);
@@ -845,7 +1319,14 @@ for (const base of ['', 'output/chrome-mv3']) {
       Y: (id, sites) => sites.find((selected) => selected.id === id),
     });
     vm.runInContext(
-      background.functions('Kp', 'recordLearningIdentity', 'prepareLearnedAccountIdentity'),
+      background.functions(
+        'Kp',
+        'sanitizeLearnedIdentitySource',
+        'latestLearningLogin',
+        'recordLearningIdentity',
+        'prepareLearnedAccountIdentity',
+        'prepareLearnedIdentitySource',
+      ),
       context,
     );
     const sender = { tab: { id: 7 }, frameId: 0, url: 'https://skybaby.us.ci/profile' };
@@ -911,6 +1392,16 @@ for (const base of ['', 'output/chrome-mv3']) {
     await assert.rejects(
       () => context.prepareLearnedAccountIdentity(state.session, account, site, workflow),
       /出现过不同用户 ID/,
+    );
+  });
+
+  test(`${label}: a new learning login cannot reuse the previous login's profile identity`, async () => {
+    const { context, state, site, account, sender, observation, workflow } = learningContext();
+    await context.recordLearningIdentity(observation, sender, 'learn-1');
+    state.session.events.push({ type: 'click', loginAction: 'submit', path: '/login', at: 5 });
+    await assert.rejects(
+      () => context.prepareLearnedAccountIdentity(state.session, account, site, workflow),
+      /上一次登录/,
     );
   });
 
