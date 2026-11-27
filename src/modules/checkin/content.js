@@ -7993,6 +7993,15 @@ export function createCheckinAutoContent(__contentScope) {
     }
     const loginVerificationNavigation = {};
     let checkinResultBeforeClick, lastLoginState;
+    let identityConfirmedThisRun = e.identityConfirmed === !0;
+    const savedConfirmIdentity = t.confirmIdentity;
+    t = {
+      ...t,
+      confirmIdentity: async () => {
+        identityConfirmedThisRun = !0;
+        await savedConfirmIdentity?.();
+      },
+    };
     async function readCurrentLoginState(timeoutMs = 6e3) {
       const state = await (0, __contentScope.readLoginState)(v(), {
         timeoutMs,
@@ -8146,11 +8155,8 @@ export function createCheckinAutoContent(__contentScope) {
           await t.confirmIdentity?.();
           return !0;
         }
-        if (binding !== `switching`)
-          await t.needsUser(
-            `GitHub 首次登录身份尚未稳定（${a.detail}），请核对本站资料页和本账号凭据`,
-            n,
-          );
+        if (binding === `switching`) return !1;
+        await reloginTargetAccount(`GitHub 身份尚未稳定（${a.detail}）`, `OAuth 返回页`);
         return !1;
       }
       if (
@@ -8208,27 +8214,17 @@ export function createCheckinAutoContent(__contentScope) {
       if (s.action === `defer-to-checkin-page`)
         return (S.push(`OAuth 返回页读不到可核对身份，将在签到页核对后再执行签到`), !0);
       if (s.action === `switch-account`) {
-        let e = await A();
-        return (
-          e === `started` ||
-            (await t.needsUser(
-              e === `exhausted`
-                ? De(a, `OAuth 返回页`)
-                : `无法同时退出当前站点会话和 GitHub 会话，为避免给错账号签到已停止。`,
-              n,
-            )),
-          !1
+        await reloginTargetAccount(
+          a.match === `mismatch` ? `识别到其他账号（${a.detail}）` : `无法读取当前账号身份（${a.detail}）`,
+          `OAuth 返回页`,
         );
+        return !1;
       }
-      return (
-        await t.needsUser(
-          a.match === `mismatch`
-            ? `OAuth 返回后核对到当前登录的是别的账号（${a.detail}）。请切换到 ${e.username} 后重新签到。`
-            : `OAuth 返回后仍无法确认当前身份，而本站配置了 ${e.siteAccountCount ?? `多个`} 个不同账号。请确认页面登录的是 ${e.username} 后重新签到。`,
-          n,
-        ),
-        !1
+      await reloginTargetAccount(
+        a.match === `mismatch` ? `识别到其他账号（${a.detail}）` : `无法读取当前账号身份（${a.detail}）`,
+        `OAuth 返回页`,
       );
+      return !1;
     }
     async function k() {
       if (
@@ -8265,6 +8261,27 @@ export function createCheckinAutoContent(__contentScope) {
             : (S.push(`${__contentScope.Km} 已退出站点账号，正在退出当前 GitHub 会话`),
               await t.startGithubLogout(n),
               `started`);
+    }
+    async function reloginTargetAccount(reason, source) {
+      S.push(`${source}${reason}，清除当前会话并使用账号 ${e.username} 重新登录`);
+      if (r === `token`)
+        return C(`本账号 Token 身份尚未确认（${reason}），请检查并重新抓取该账号的 Token`);
+      if (r === `github` && o) {
+        const result = await A();
+        if (result === `started`) return null;
+        return C(
+          result === `exhausted`
+            ? `已达到本轮 GitHub 账号切换次数上限，请重新执行签到`
+            : `无法清理当前 GitHub / 本站会话，为避免给错账号签到已停止`,
+        );
+      }
+      const result = await k();
+      if (result === `reloading`) return null;
+      if (result === `exhausted`)
+        return C(`已达到本轮账号切换次数上限，请重新执行签到`);
+      if (result === `blocked`)
+        return C(`无法清除当前站点会话，为避免给错账号签到已停止；请检查扩展 Cookie 权限`);
+      return C(`无法为账号 ${e.username} 重新打开登录页`);
     }
     async function Te() {
       if (!e.site.tokenConfig)
@@ -8398,11 +8415,6 @@ export function createCheckinAutoContent(__contentScope) {
       }
       return te(r.message, r.metrics);
     }
-    function De(t, n) {
-      return t.match === `mismatch`
-        ? `已自动切换过 GitHub 账号，但${n}明确核对到的仍不是 ${e.username}（${t.detail}）；请检查该账号保存的 GitHub 凭据`
-        : `已自动切换过 GitHub 账号，但${n}仍未读取到足够的身份信息（${t.detail}）；这不能证明 GitHub 凭据错误，已停止签到以避免记到错误账号`;
-    }
     function Oe(e, t) {
       let n = e.identity,
         r = [
@@ -8500,83 +8512,39 @@ export function createCheckinAutoContent(__contentScope) {
       return je(e, t);
     }
     async function je(a, s) {
+      if (r === `form` && formLoginSubmitted) {
+        S.push(`本轮已使用本账号的用户名和密码登录成功，直接继续签到`);
+        await t.confirmIdentity?.();
+        return { proceed: !0 };
+      }
       if (a.identity?.identityConflict) {
         Oe(a, s);
-        await t.needsUser(
-          `身份证据冲突：${a.identity.identityConflict}。本次目标用户 ID ${g() ?? `尚未绑定`}；未能确认当前登录身份，已停止签到，请等待页面加载完成后重试。`,
-          n,
-        );
-        return { proceed: !1, result: null };
-      }
-      if (
-        r === `manual` &&
-        (s.match !== `confirmed` || (!hasBoundIdentity() && !matchesManualAccount(a.identity)))
-      ) {
-        Oe(a, s);
-        await t.needsUser(
-          `页面登录身份尚未确认是账号 ${e.username}（${s.detail}）。请在本站完成目标账号登录后重试。`,
-          n,
-        );
-        return { proceed: !1, result: null };
-      }
-      if (r === `auto` && !hasBoundIdentity()) {
-        S.push(`首次使用本站流程，先识别登录页并使用本账号凭据建立身份`);
-        const switched = await k();
         return {
           proceed: !1,
-          result:
-            switched === `reloading`
-              ? null
-              : C(`本账号首次身份尚未建立，请确认登录页和账号凭据后重试`),
+          result: await reloginTargetAccount(
+            `身份证据冲突（${a.identity.identityConflict}）`,
+            `当前页面`,
+          ),
         };
       }
-      let c = !!y().checkin?.entry || (0, __contentScope.cf)(y());
+      if (s.match === `confirmed`) {
+        S.push(`已确认当前登录账号：${s.detail}`);
+        await t.confirmIdentity?.();
+        return { proceed: !0 };
+      }
+      if (r === `auto` && !hasBoundIdentity()) {
+        return {
+          proceed: !1,
+          result: await reloginTargetAccount(`身份尚未建立（${s.detail}）`, `当前页面`),
+        };
+      }
       if (r === `form` && !hasBoundIdentity()) {
-        if (canEstablishFormIdentity(a) && a.managedLoginStable === !0) {
-          if (!t.saveIdentity) {
-            return {
-              proceed: !1,
-              result: C(`无法保存本账号首次确认的身份，请重新加载扩展后重试`),
-            };
-          }
-          try {
-            await ie({ ...a.identity, verifiedByManagedLogin: !0 }, !0);
-          } catch (error) {
-            return {
-              proceed: !1,
-              result: C(
-                `本账号首次身份未能保存，已停止签到：${error instanceof Error ? error.message : String(error)}`,
-              ),
-            };
-          }
-          S.push(
-            `已使用本账号凭据登录并确认本站${g() ? `用户 ID ${g()}` : `登录标识 ${m ?? h}`}，继续使用本站统一签到流程`,
-          );
-          (0, __contentScope.cf)(y()) && S.push(__contentScope.rh);
-          await t.confirmIdentity?.();
-          return { proceed: !0 };
-        }
         if (!formLoginSubmitted) {
-          S.push(`首次使用本站统一签到流程，先用本账号的凭据重新登录并建立独立身份`);
-          const switched = await k();
           return {
             proceed: !1,
-            result:
-              switched === `reloading`
-                ? null
-                : C(
-                    switched === `blocked`
-                      ? `无法清除当前站点会话，已停止本账号首次登录；请检查 Cookie 权限后重试`
-                      : `本账号首次身份确认未完成，已停止自动重试；请检查登录凭据和站点页面`,
-                  ),
+            result: await reloginTargetAccount(`身份尚未建立（${s.detail}）`, `当前页面`),
           };
         }
-        Oe(a, s);
-        await t.needsUser(
-          `本站统一签到流程已保存，但本次登录后尚未确认本账号的稳定身份（${s.detail}）。已停止签到，请确认账号凭据及身份页加载完成后重试。`,
-          n,
-        );
-        return { proceed: !1, result: null };
       }
       if (r === `github` && !hasBoundIdentity()) {
         const binding = await me(a, `个人资料页`);
@@ -8587,11 +8555,10 @@ export function createCheckinAutoContent(__contentScope) {
         }
         if (binding === `switching`) return { proceed: !1, result: null };
         Oe(a, s);
-        await t.needsUser(
-          `GitHub 首次登录身份尚未稳定（${s.detail}），已停止签到并保留原账号数据`,
-          n,
-        );
-        return { proceed: !1, result: null };
+        return {
+          proceed: !1,
+          result: await reloginTargetAccount(`GitHub 身份尚未稳定（${s.detail}）`, `个人资料页`),
+        };
       }
       if (s.match === `unknown` && i && a.identity) {
         let e = await me(a, `个人资料页`);
@@ -8603,87 +8570,21 @@ export function createCheckinAutoContent(__contentScope) {
             { proceed: !0 }
           );
       }
-      if (c && s.match === `unknown`)
-        return (
-          Oe(a, s),
-          await t.needsUser(
-            `身份核验页仍未显示可核对的账号身份（${s.detail}）。已停止签到和奖励读取，请确认该页面已完整加载后重试；若这一页不显示当前账号，请更新本站统一流程的身份核验页，本站账号会共用更新后的路线。`,
-            n,
-          ),
-          { proceed: !1, result: null }
-        );
-      let l = (0, __contentScope.Qp)({
-        loginMethod: r,
-        verdict: s.match,
-        expectedUserId: g(),
-        siteAccountCount: e.siteAccountCount,
-        identityConfirmedThisRun: s.match === `unknown` && !c && e.identityConfirmed,
-        checkinPageAvailable: !1,
-        canSwitchAccount: o,
-      });
-      if (l.action === `proceed`)
-        return (
-          l.reason === `confirmed`
-            ? (a.identity &&
-                !(await T(a.identity)) &&
-                S.push(`个人资料页身份只来自页面或本地副本，本轮核对通过但不更新长期账号映射`),
-              S.push(`个人资料页已核对账号身份：${s.detail}`),
-              (0, __contentScope.cf)(y()) && S.push(__contentScope.rh),
-              await t.confirmIdentity?.())
-            : l.reason === `already-confirmed-this-run`
-              ? S.push(`本轮登录账号已经确认，签到页暂未返回额外身份字段，继续签到`)
-              : S.push(`个人资料页读不到可核对的身份，但本站只有该账号，继续签到`),
-          { proceed: !0 }
-        );
-      if ((Oe(a, s), l.action === `handoff` || l.action === `defer-to-checkin-page`))
-        return (
-          await t.needsUser(
-            s.match === `mismatch`
-              ? `个人资料页当前登录的不是账号 ${e.username}（${s.detail}）。已停止签到和奖励读取，请切换账号后重试。`
-              : `个人资料页无法确认当前登录的是账号 ${e.username}，而本站配置了 ${e.siteAccountCount ?? `多个`} 个不同账号。已停止签到和奖励读取，请确认账号后重试。`,
-            n,
-          ),
-          { proceed: !1, result: null }
-        );
-      if (l.action === `switch-account`) {
-        if (o) {
-          let e = await A();
-          return e === `started`
-            ? { proceed: !1, result: null }
-            : {
-                proceed: !1,
-                result: C(
-                  e === `exhausted`
-                    ? De(s, `个人资料页`)
-                    : `无法清除当前站点的浏览器 Cookie，为避免给错账号签到已停止；请检查扩展 Cookie 权限或残留项`,
-                ),
-              };
-        }
-        let r = await k();
-        return r === `reloading`
-          ? { proceed: !1, result: null }
-          : r === `exhausted`
-            ? {
-                proceed: !1,
-                result: C(
-                  `个人资料页身份仍不匹配，已达到自动切换次数上限；请检查本账号凭据和本站用户 ID 绑定`,
-                ),
-              }
-            : r === `blocked`
-              ? {
-                  proceed: !1,
-                  result: C(
-                    `无法清除当前站点的浏览器 Cookie，为避免给错账号签到已停止；请检查扩展 Cookie 权限或残留项`,
-                  ),
-                }
-              : (await t.navigate(e.site.loginUrl, n, `login`), { proceed: !1, result: null });
+      if (s.match === `unknown` && identityConfirmedThisRun) {
+        S.push(`本轮登录账号已经确认，当前页面暂未返回额外身份字段，继续签到`);
+        return { proceed: !0 };
       }
+      Oe(a, s);
       return {
         proceed: !1,
-        result: C(`个人资料页核对到账号不符：${s.detail}；已停止签到和奖励读取`),
+        result: await reloginTargetAccount(
+          s.match === `mismatch` ? `识别到其他账号（${s.detail}）` : `无法读取当前账号身份（${s.detail}）`,
+          `个人资料页`,
+        ),
       };
     }
     async function Me(r) {
+      if (identityConfirmedThisRun) return null;
       let i = y();
       if (!(0, __contentScope.p)(i)) return null;
       if (!(0, __contentScope.W)(i, location.href))
@@ -8764,6 +8665,10 @@ export function createCheckinAutoContent(__contentScope) {
       return null;
     }
     async function M(r = !1) {
+      if (formLoginSubmitted && !identityConfirmedThisRun) {
+        S.push(`本轮已使用本账号的用户名和密码登录成功，直接继续签到`);
+        await t.confirmIdentity?.();
+      }
       let i = y();
       if (
         (0, __contentScope.p)(i) &&
@@ -8778,7 +8683,7 @@ export function createCheckinAutoContent(__contentScope) {
         s = i.checkin?.method === `button` && !ge(),
         c = (0, __contentScope.rf)(i),
         l = (0, __contentScope.sf)(i);
-      if (c && !l)
+      if (c && !l && !identityConfirmedThisRun)
         return (
           S.push(`学习签到路线缺少身份核验页`),
           await t.needsUser(
@@ -8789,8 +8694,8 @@ export function createCheckinAutoContent(__contentScope) {
         );
       let u = (0, __contentScope.of)(i, _),
         d = (0, __contentScope.cf)(i),
-        f = (0, __contentScope.lh)(n);
-      if (!c && !e.identityConfirmed) {
+        f = (0, __contentScope.lh)(n) || identityConfirmedThisRun;
+      if (!c && !identityConfirmedThisRun) {
         const observation = await se(`签到前的页面`),
           verdict = ce(observation);
         if (await enterIdentityPage(observation, verdict, `checkin`)) return null;
@@ -8842,7 +8747,7 @@ export function createCheckinAutoContent(__contentScope) {
         if (e.status === `failed`) return C(e.message);
         await (0, __contentScope.U)(i, S, { waitForAppear: !0 });
       }
-      if (l ? h : h && !m) {
+      if ((l ? h : h && !m) && !identityConfirmedThisRun) {
         if (!(await be(`checkin`, __contentScope.$)))
           return C(`个人资料页身份核对前的人机验证未完成`);
         let e = await Ae();
@@ -8905,7 +8810,13 @@ export function createCheckinAutoContent(__contentScope) {
             return C(`登录跳转到了非本站页面，已停止自动操作`);
           if (!(await we(`verify`)))
             return C(loginFailureMessage(`未找到明确的登录成功证据(${location.pathname})`));
-          if ((S.push(`登录结果已确认(${location.pathname})`), !(0, __contentScope.rf)(y()))) {
+          S.push(`登录结果已确认(${location.pathname})`);
+          if (r === `form` && formLoginSubmitted) {
+            S.push(`本轮已使用本账号的用户名和密码登录成功，直接继续签到`);
+            await t.confirmIdentity?.();
+            return M(!0);
+          }
+          if (!(0, __contentScope.rf)(y())) {
             let i = await se(`登录后的页面`),
               r = i.identity,
               a = de(i, ce(i));
@@ -9085,33 +8996,20 @@ export function createCheckinAutoContent(__contentScope) {
             (0, __contentScope.di)();
           }
           if (i) {
+            if (r === `form` && formLoginSubmitted) {
+              S.push(`本轮已使用本账号的用户名和密码登录成功，直接继续签到`);
+              await t.confirmIdentity?.();
+              return M((0, __contentScope.uh)(n));
+            }
             if (r === `manual`) {
               const verification = await confirmManualIdentity();
               if (verification.confirmed) return M((0, __contentScope.uh)(n));
-              await t.needsUser(
-                `当前页面登录身份尚未确认是账号 ${e.username}（${verification.detail}）。请完成目标账号登录后重试。`,
-                n,
-              );
-              return null;
-            }
-            if ((r === `form` || r === `auto`) && !hasBoundIdentity() && !formLoginSubmitted) {
-              S.push(`首次确认本账号身份，先结束现有会话并使用本账号凭据登录`);
-              const switched = await k();
-              if (switched === `reloading`) return null;
-              return C(
-                switched === `blocked`
-                  ? `无法清除当前站点会话，已停止本账号首次登录；请检查 Cookie 权限后重试`
-                  : `本账号首次身份确认未完成，已停止自动重试；请检查登录凭据和站点页面`,
+              return reloginTargetAccount(
+                `身份与目标账号不一致或无法读取（${verification.detail}）`,
+                `当前页面`,
               );
             }
-            if (r === `github` && !hasBoundIdentity() && e.githubCredentialsSubmitted !== !0) {
-              S.push(`首次确认本站 GitHub 身份，先使用本账号保存的凭据重新登录`);
-              const switched = await A();
-              return switched === `started`
-                ? null
-                : C(`GitHub 首次身份需要本账号的登录凭据，请检查已保存的 GitHub 用户名和密码`);
-            }
-            if (e.identityConfirmed)
+            if (identityConfirmedThisRun)
               return (
                 S.push(`本轮已确认过登录账号，直接继续`),
                 await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 }),
@@ -9120,77 +9018,26 @@ export function createCheckinAutoContent(__contentScope) {
             if (y().checkin?.entry || (0, __contentScope.rf)(y()))
               return M((0, __contentScope.uh)(n));
             let i = a ? { identity: a } : await se(`当前页`),
-              s = ce(i),
-              c = (0, __contentScope.Qp)({
-                loginMethod: r,
-                verdict: s.match,
-                expectedUserId: g(),
-                siteAccountCount: e.siteAccountCount,
-                checkinPageAvailable: !!ge(),
-                canSwitchAccount: o,
-              });
+              s = ce(i);
             if (await enterIdentityPage(i, s, `checkin`)) return null;
             if (i.identity?.identityConflict) {
               await je(i, s);
               return null;
             }
-            if (c.action === `defer-to-checkin-page`) {
-              let e = ge();
+            if (s.match === `confirmed`)
               return (
-                S.push(`当前页读不到可核对的身份，先进入签到页 ${_e(e)} 再核对账号`),
-                await t.navigate(e, n, `checkin`),
-                null
-              );
-            }
-            if (c.action === `proceed`)
-              return (
-                c.reason === `confirmed`
-                  ? (S.push(`已确认当前登录账号：${s.detail}`),
-                    i.identity &&
-                      !(await T(i.identity)) &&
-                      S.push(`当前身份证据不是站点接口结果，本轮继续但不更新长期账号映射`))
-                  : S.push(`${r} 登录：读不到可核对的身份，但本站只有该账号，继续签到`),
+                S.push(`已确认当前登录账号：${s.detail}`),
                 await t.confirmIdentity?.(),
                 await (0, __contentScope.U)(e.site, S, { waitForAppear: !0 }),
                 M((0, __contentScope.uh)(n))
               );
-            if (
-              (s.match === `mismatch` && S.push(`检测到账号不符：${s.detail}`),
-              c.action === `handoff`)
-            )
-              return (
-                await t.needsUser(
-                  c.reason === `mismatch-external`
-                    ? `当前浏览器登录的是别的账号（${s.detail}）。请在浏览器里切换到 ${e.username} 后重新签到。`
-                    : `读不到当前登录身份（${s.detail}），而本站配置了 ${e.siteAccountCount ?? `多个`} 个账号，无法确认浏览器里登录的是不是本账号。请在浏览器里确认后重新签到。`,
-                  n,
-                ),
-                null
-              );
-            if (
-              (s.match !== `mismatch` &&
-                S.push(`无法确认当前登录身份（${s.detail}），按切换账号处理`),
-              o)
-            ) {
-              let e = await A();
-              return e === `started`
-                ? null
-                : C(
-                    e === `exhausted`
-                      ? De(s, `当前页面`)
-                      : `无法清除当前站点的浏览器 Cookie，为避免给错账号签到已停止；请检查扩展 Cookie 权限或残留项`,
-                  );
-            }
-            let l = await k();
-            if (l === `reloading`) return null;
-            if (l === `exhausted`)
-              return C(
-                `当前页面身份仍不匹配，已达到自动切换次数上限；请检查本账号凭据和本站用户 ID 绑定`,
-              );
-            if (l === `blocked`)
-              return C(
-                `无法清除当前站点的浏览器 Cookie，为避免给错账号签到已停止；请检查扩展 Cookie 权限或残留项`,
-              );
+            Oe(i, s);
+            return reloginTargetAccount(
+              s.match === `mismatch`
+                ? `识别到其他账号（${s.detail}）`
+                : `无法读取当前账号身份（${s.detail}）`,
+              `当前页面`,
+            );
           }
           if (r === `token`) return Te();
           if (r === `auto`) {
@@ -9221,14 +9068,18 @@ export function createCheckinAutoContent(__contentScope) {
           const beforeLoginState = await readCurrentLoginState(2500);
           if (beforeLoginState.status === `authenticated`) {
             S.push(`准备登录期间已确认当前会话登录，转入账号核验`);
+            if (r === `form` && formLoginSubmitted) {
+              S.push(`本轮已使用本账号的用户名和密码登录成功，直接继续签到`);
+              await t.confirmIdentity?.();
+              return M(!0);
+            }
             if (r === `manual`) {
               const verification = await confirmManualIdentity();
               if (!verification.confirmed)
-                return stopForUnconfirmedLogin({
-                  status: `pending`,
-                  reason: `identity_unstable`,
-                  detail: verification.detail,
-                });
+                return reloginTargetAccount(
+                  `身份与目标账号不一致或无法读取（${verification.detail}）`,
+                  `当前页面`,
+                );
             }
             return M((0, __contentScope.uh)(n));
           }
@@ -9325,11 +9176,9 @@ export function createCheckinAutoContent(__contentScope) {
             c = await we(`verify`);
           }
           return c
-            ? ((0, __contentScope.rf)(y()) || (await t.confirmIdentity?.()),
+            ? (await t.confirmIdentity?.(),
               S.push(
-                (0, __contentScope.rf)(y())
-                  ? `表单登录成功，账号身份交由个人资料页统一核验`
-                  : `本轮账号 ${e.username} 登录成功，已记住身份供后续页面使用`,
+                `本轮账号 ${e.username} 使用自己的用户名和密码登录成功，直接继续签到`,
               ),
               await (0, __contentScope.U)(e.site, S),
               M(!0))

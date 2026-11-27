@@ -517,7 +517,7 @@ for (const base of ['', 'output/chrome-mv3']) {
       username: '3306',
       password: 'test-only',
       accountIdentityUserId: '299',
-      formCredentialsSubmitted: true,
+      formCredentialsSubmitted: false,
       siteAccountCount: 2,
       siteAccountUserIds: { 300: 'other-account' },
       stage: 'checkin',
@@ -623,7 +623,7 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(actions.clears, 0);
     assert.deepEqual(actions.identities, []);
     assert.equal(result?.ok, false);
-    assert.match(result.message, /身份仍不匹配|身份核验/);
+    assert.match(result.message, /切换次数上限/);
   });
 
   test(`${label}: stable current-user API confirms before profile without skipping workflow execution`, async () => {
@@ -673,7 +673,7 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.ok(actions.identityReads >= 3);
   });
 
-  test(`${label}: conflicting identity evidence never confirms, switches or rewrites a bound account`, async () => {
+  test(`${label}: conflicting identity evidence clears the existing session and restarts login`, async () => {
     const { actions, result } = await replay({
       samples: [
         {
@@ -683,12 +683,14 @@ for (const base of ['', 'output/chrome-mv3']) {
       ],
     });
     assert.equal(result, null);
-    assert.equal(actions.clears, 0);
+    assert.equal(actions.clears, 1);
     assert.equal(actions.checkins, 0);
     assert.equal(actions.confirms, 0);
+    assert.deepEqual(actions.navigations, [
+      { url: 'https://skybaby.us.ci/login', stage: 'login' },
+    ]);
     assert.deepEqual(actions.identities, []);
-    assert.equal(actions.handoffs.length, 1);
-    assert.match(actions.handoffs[0], /冲突/);
+    assert.deepEqual(actions.handoffs, []);
   });
 
   for (const stage of ['relogin', 'relogin-verify']) {
@@ -825,7 +827,7 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.deepEqual(actions.handoffs, []);
   });
 
-  test(`${label}: a different visible user ID is a definite GitHub account mismatch`, async () => {
+  test(`${label}: a different visible GitHub user clears the existing session and restarts login`, async () => {
     const { actions, result } = await replay({
       loginMethod: 'github',
       samples: [
@@ -835,26 +837,26 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(result, null);
     assert.equal(actions.checkins, 0);
     assert.equal(actions.confirms, 0);
-    assert.equal(actions.handoffs.length, 1);
-    assert.match(actions.handoffs[0], /用户 ID 305/);
-    assert.match(actions.handoffSteps[0].join('\n'), /结论 mismatch/);
-    assert.doesNotMatch(actions.handoffSteps[0].join('\n'), /只读到第三方句柄/);
+    assert.equal(actions.clears, 1);
+    assert.deepEqual(actions.navigations, [
+      { url: 'https://skybaby.us.ci/login', stage: 'login' },
+    ]);
+    assert.deepEqual(actions.handoffs, []);
   });
 
-  test(`${label}: first managed login binds a name-only site's exact login name`, async () => {
+  test(`${label}: this account's successful form login proceeds without a second identity lookup`, async () => {
     const { actions, result } = await replay({
       boundId: null,
       username: '3914',
       formSubmitted: true,
-      samples: [{ username: '3914', source: 'api' }],
+      samples: [null],
     });
     assert.equal(result?.ok, true);
     assert.equal(actions.clears, 0);
     assert.equal(actions.checkins, 1);
     assert.equal(actions.confirms, 1);
-    assert.deepEqual(actions.identities, [
-      { username: '3914', source: 'api', verifiedByManagedLogin: true },
-    ]);
+    assert.equal(actions.identityReads, 0);
+    assert.deepEqual(actions.identities, []);
   });
 
   test(`${label}: saved name-only identities reuse the same workflow without logging in again`, async () => {
@@ -886,18 +888,18 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(actions.identities[0].verifiedByManagedLogin, true);
   });
 
-  test(`${label}: first GitHub binding does not reuse another browser session`, async () => {
+  test(`${label}: a GitHub session with this account's matching provider identity is reused`, async () => {
     const { actions, result } = await replay({
       loginMethod: 'github',
       boundId: null,
       githubCredentials: true,
       samples: [{ userId: '304', username: 'saved-github-login', source: 'api' }],
     });
-    assert.equal(result, null);
-    assert.equal(actions.checkins, 0);
-    assert.equal(actions.confirms, 0);
-    assert.equal(actions.clears, 1);
-    assert.equal(actions.githubLogouts, 1);
+    assert.equal(result?.ok, true);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.githubLogouts, 0);
     assert.deepEqual(actions.identities, []);
   });
 
@@ -922,8 +924,28 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(actions.noticeChecks[0].waitForAppear, true);
   });
 
-  test(`${label}: an authenticated OAuth page still rejects a different bound user ID`, async () => {
-    const { actions } = await replay({
+  test(`${label}: an existing form-login session matching this account is reused without clearing cookies`, async () => {
+    const { actions, result } = await replay({
+      stage: 'login',
+      boundId: null,
+      username: '3914',
+      loginState: {
+        status: 'authenticated',
+        reason: 'logout_control',
+        detail: '页面显示可见的退出登录控件',
+      },
+      samples: [{ username: '3914', source: 'api' }],
+    });
+    assert.equal(result?.ok, true, result?.message);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.clears, 0);
+    assert.equal(actions.oauthClicks, 0);
+    assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.confirms, 1);
+  });
+
+  test(`${label}: an authenticated OAuth page clears its session and restarts login for a different bound user ID`, async () => {
+    const { actions, result } = await replay({
       stage: 'login',
       loginMethod: 'oauth',
       boundId: '305',
@@ -934,14 +956,19 @@ for (const base of ['', 'output/chrome-mv3']) {
         detail: '当前用户接口连续返回用户 ID 304',
       },
     });
+    assert.equal(result, null);
     assert.equal(actions.checkins, 0);
     assert.equal(actions.oauthClicks, 0);
     assert.equal(actions.credentialFills, 0);
+    assert.equal(actions.clears, 1);
+    assert.deepEqual(actions.navigations, [
+      { url: 'https://skybaby.us.ci/login', stage: 'login' },
+    ]);
     assert.deepEqual(actions.identities, []);
-    assert.ok(actions.handoffs.some((message) => /身份|账号|304|305/.test(message)));
+    assert.deepEqual(actions.handoffs, []);
   });
 
-  test(`${label}: a confirmed logged-in page with unreadable identity stops at account verification and never searches for Google`, async () => {
+  test(`${label}: a confirmed logged-in page with unreadable identity clears the session and restarts account login`, async () => {
     const { actions, result } = await replay({
       stage: 'login',
       loginMethod: 'oauth',
@@ -955,10 +982,12 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(result, null);
     assert.equal(actions.checkins, 0);
     assert.equal(actions.oauthClicks, 0);
-    assert.equal(actions.clears, 0);
+    assert.equal(actions.clears, 1);
+    assert.deepEqual(actions.navigations, [
+      { url: 'https://skybaby.us.ci/login', stage: 'login' },
+    ]);
     assert.deepEqual(actions.identities, []);
-    assert.ok(actions.handoffs.some((message) => /账号身份|身份核验|无法确认/.test(message)));
-    assert.ok(actions.handoffs.every((message) => !/未找到.*Google|更新.*登录方式/.test(message)));
+    assert.deepEqual(actions.handoffs, []);
   });
 
   test(`${label}: unavailable or unstable login evidence cannot start OAuth or clear the existing session`, async () => {
@@ -1176,6 +1205,54 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.equal(actions.clears, 0);
   });
 
+  test(`${label}: check-in without a configured identity route confirms two live identity samples`, async () => {
+    const { actions, result } = await replay({
+      workflow: false,
+      samples: [
+        { userId: '304', username: '3914', source: 'api' },
+        { userId: '304', username: '3914', source: 'api' },
+      ],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.identityReads, 2);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.clears, 0);
+  });
+
+  test(`${label}: a successful login with this account's form credentials skips identity rechecking`, async () => {
+    const { actions, result } = await replay({
+      stage: 'verify',
+      formSubmitted: true,
+      samples: [null],
+    });
+    assert.equal(result?.ok, true);
+    assert.equal(actions.identityReads, 0);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.clears, 0);
+  });
+
+  test(`${label}: check-in without a configured identity route clears the previous session when identity differs or is unreadable`, async () => {
+    for (const samples of [
+      [
+        { userId: '304', username: '3914', source: 'api' },
+        { userId: '303', username: 'other-user', source: 'api' },
+      ],
+      [null],
+    ]) {
+      const { actions, result } = await replay({ workflow: false, samples });
+      assert.equal(result, null);
+      assert.equal(actions.checkins, 0);
+      assert.equal(actions.confirms, 0);
+      assert.equal(actions.clears, 1);
+      assert.deepEqual(actions.navigations, [
+        { url: 'https://skybaby.us.ci/login', stage: 'login' },
+      ]);
+      assert.deepEqual(actions.handoffs, []);
+    }
+  });
+
   test(`${label}: ID 303 switches once and cannot reach the check-in action`, async () => {
     const { actions, result } = await replay({ pageId: '303' });
     assert.equal(result, null);
@@ -1200,79 +1277,83 @@ for (const base of ['', 'output/chrome-mv3']) {
     assert.deepEqual(actions.navigations, [{ url: 'https://skybaby.us.ci/login', stage: 'login' }]);
   });
 
-  test(`${label}: a stable first identity after managed login uses the site's shared workflow`, async () => {
-    const { actions, result } = await replay({ boundId: null, formSubmitted: true });
+  test(`${label}: the account's own successful form login continues through the shared workflow without identity samples`, async () => {
+    const { actions, result } = await replay({
+      boundId: null,
+      formSubmitted: true,
+      samples: [null],
+    });
     assert.equal(result?.ok, true);
     assert.equal(actions.clears, 0);
     assert.equal(actions.checkins, 1);
     assert.equal(actions.confirms, 1);
+    assert.equal(actions.identityReads, 0);
     assert.deepEqual(actions.handoffs, []);
-    assert.deepEqual(actions.identities, [
-      {
-        userId: '304',
-        username: '3914',
-        source: 'visible',
-        verifiedByManagedLogin: true,
-      },
-    ]);
+    assert.deepEqual(actions.identities, []);
   });
 
-  test(`${label}: another saved account's ID cannot become this account's first identity`, async () => {
-    const { actions } = await replay({
+  test(`${label}: successful form login trusts the credentials instead of comparing the returned ID again`, async () => {
+    const { actions, result } = await replay({
       pageId: '303',
       boundId: null,
       formSubmitted: true,
     });
-    assert.equal(actions.checkins, 0);
-    assert.equal(actions.confirms, 0);
+    assert.equal(result?.ok, true);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.identityReads, 0);
     assert.deepEqual(actions.identities, []);
-    assert.equal(actions.handoffs.length, 1);
-    assert.doesNotMatch(actions.handoffs[0], /请为本账号重新学习/);
+    assert.deepEqual(actions.handoffs, []);
   });
 
-  test(`${label}: changing first-login ID samples cannot bind or run the shared workflow`, async () => {
-    const { actions } = await replay({
+  test(`${label}: own form login does not wait for changing identity samples before check-in`, async () => {
+    const { actions, result } = await replay({
       boundId: null,
       formSubmitted: true,
       samples: ['304', '305'],
     });
-    assert.equal(actions.checkins, 0);
-    assert.equal(actions.confirms, 0);
+    assert.equal(result?.ok, true);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.identityReads, 0);
     assert.deepEqual(actions.identities, []);
-    assert.equal(actions.handoffs.length, 1);
-    assert.match(actions.handoffs[0], /稳定/);
+    assert.deepEqual(actions.handoffs, []);
   });
 
-  test(`${label}: failed first identity persistence stops before any check-in action`, async () => {
+  test(`${label}: own form login does not require identity persistence to check in`, async () => {
     const { actions, result } = await replay({
       boundId: null,
       formSubmitted: true,
       identitySaveOk: false,
+      canSaveIdentity: false,
+      samples: [null],
     });
-    assert.equal(result?.ok, false);
-    assert.equal(actions.checkins, 0);
-    assert.equal(actions.confirms, 0);
-    assert.equal(actions.identities.length, 1);
+    assert.equal(result?.ok, true);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.identities.length, 0);
+    assert.equal(actions.identityReads, 0);
   });
 
-  test(`${label}: missing identity adapter cannot bypass first-account verification`, async () => {
+  test(`${label}: own form login does not require an identity adapter to check in`, async () => {
     const { actions, result } = await replay({
       boundId: null,
       formSubmitted: true,
       canSaveIdentity: false,
+      samples: [null],
     });
-    assert.equal(result?.ok, false);
-    assert.equal(actions.checkins, 0);
-    assert.equal(actions.confirms, 0);
+    assert.equal(result?.ok, true);
+    assert.equal(actions.checkins, 1);
+    assert.equal(actions.confirms, 1);
+    assert.equal(actions.identityReads, 0);
     assert.deepEqual(actions.identities, []);
-    assert.match(result.message, /首次确认的身份/);
   });
 
   test(`${label}: exhausted switching is reported as identity failure`, async () => {
     const { actions, result } = await replay({ pageId: '303', steps: ['切换账号: 已清除'] });
     assert.equal(actions.clears, 0);
     assert.equal(actions.checkins, 0);
-    assert.match(result.message, /身份仍不匹配，已达到自动切换次数上限/);
+    assert.match(result.message, /切换次数上限/);
     assert.doesNotMatch(result.message, /无法清除.*Cookie/);
   });
 

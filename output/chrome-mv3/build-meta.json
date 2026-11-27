@@ -441,7 +441,7 @@
       "format": "esm"
     },
     "src/modules/checkin/content.js": {
-      "bytes": 431244,
+      "bytes": 423660,
       "imports": [
         {
           "path": "src/shared/content-runtime.js",
@@ -962,7 +962,7 @@
       "imports": [],
       "exports": [],
       "inputs": {},
-      "bytes": 1365061
+      "bytes": 1354634
     },
     "output/chrome-mv3/content-scripts/auto-login.js": {
       "imports": [],
@@ -994,7 +994,7 @@
           "bytesInOutput": 3479
         },
         "src/modules/checkin/content.js": {
-          "bytesInOutput": 417825
+          "bytesInOutput": 411399
         },
         "src/modules/slider/content.js": {
           "bytesInOutput": 125858
@@ -1003,7 +1003,7 @@
           "bytesInOutput": 1090
         }
       },
-      "bytes": 741969
+      "bytes": 735543
     },
     "output/chrome-mv3/content-scripts/slider-captcha-frame.js.map": {
       "imports": [],
